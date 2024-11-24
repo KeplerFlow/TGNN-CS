@@ -5,48 +5,29 @@ from itertools import combinations
 from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
 
-global_node_features = {}  # {original_node_id: feature_vector}
-
-def initialize_features(data, dimensions=128, use_cached=True):
-    # 获取原始节点ID到重映射ID的映射关系
-    remapped_idx = data.node_remapped_idx
-    
-    # 初始化特征矩阵
-    node_features = torch.zeros((data.num_nodes, dimensions))
-    
+def initialize_features(data, dimensions=128):
     # 转换为NetworkX图用于k-core计算
     G_nx = to_networkx(data, to_undirected=True)
-    G_nx.remove_edges_from(nx.selfloop_edges(G_nx))
-    coreness_dict = nx.core_number(G_nx)
-    max_coreness = max(coreness_dict.values()) if coreness_dict else 1
     
-    # 遍历每个节点
-    for new_idx in range(data.num_nodes):
-        # 获取原始节点ID
-        orig_idx = torch.where(remapped_idx == new_idx)[0]
-        if len(orig_idx) > 0:
-            orig_idx = orig_idx[0].item()
-            
-            # 检查是否有缓存的特征
-            if use_cached and orig_idx in global_node_features:
-                node_features[new_idx] = global_node_features[orig_idx]
-            else:
-                # 生成新的特征
-                normalized_coreness = coreness_dict[new_idx] / max_coreness
-                feature_vector = torch.full((dimensions,), normalized_coreness, dtype=torch.float32)
-                node_features[new_idx] = feature_vector
-                # 缓存特征
-                global_node_features[orig_idx] = feature_vector
+    # 移除自环
+    G_nx.remove_edges_from(nx.selfloop_edges(G_nx))
+    
+    # 计算图的k-core
+    coreness_dict = nx.core_number(G_nx)
+    
+    # 找到最大的k-core值，用于归一化
+    max_coreness = max(coreness_dict.values()) if coreness_dict else 1
+
+    # 初始化节点特征
+    node_features = torch.zeros((data.num_nodes, dimensions))
+    
+    # 为每个节点生成归一化的coreness特征并广播到128维
+    for node in G_nx.nodes():
+        normalized_coreness = coreness_dict[node] / max_coreness
+        coreness_vector = torch.full((dimensions,), normalized_coreness, dtype=torch.float32)
+        node_features[node] = coreness_vector
     
     return node_features
-
-def update_global_features(data, features):
-    remapped_idx = data.node_remapped_idx
-    for new_idx in range(data.num_nodes):
-        orig_idx = torch.where(remapped_idx == new_idx)[0]
-        if len(orig_idx) > 0:
-            orig_idx = orig_idx[0].item()
-            global_node_features[orig_idx] = features[new_idx].clone()
 
 def sample_graph_nodes(sub_graph, proportions=(0.5, 0.3, 0.2)):
     # 获取节点的k-core值
@@ -214,15 +195,6 @@ def get_optimal_subgraphs(data, node_optimal_jumps):
     return optimal_subgraphs
 
 def compute_core_numbers(G):
-    """
-    计算图中所有节点的 core number，处理自环问题
-    
-    参数:
-    G: PyG Data对象
-    
-    返回:
-    core_numbers: tensor, 每个节点的 core number
-    """
     # 将 PyG 图转换为 NetworkX 图
     edge_index = G.edge_index.cpu().numpy()
     nx_graph = nx.Graph()
