@@ -1,6 +1,19 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+class TemporalFeatureEncoder(nn.Module):
+    def __init__(self, num_features=16):
+        super(TemporalFeatureEncoder, self).__init__()
+        # 将频率和相位初始化为可训练参数
+        self.omega = nn.Parameter(torch.randn(num_features))
+        self.phi = nn.Parameter(torch.randn(num_features))
+
+    def forward(self, timestamps):
+        t = timestamps.unsqueeze(1)  # [num_edges, 1]
+        linear_term = self.omega[0] * t + self.phi[0]
+        sin_terms = torch.sin(self.omega[1:] * t + self.phi[1:])
+        temporal_features = torch.cat([linear_term, sin_terms], dim=1)  # [num_edges, num_features]
+        return temporal_features
 
 class TemporalMessagePassingLayer(nn.Module):
     def __init__(self, in_channels, out_channels, temporal_features_dim):

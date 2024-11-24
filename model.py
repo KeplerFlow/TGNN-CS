@@ -8,13 +8,15 @@ class TemporalGNN(nn.Module):
     def __init__(self, in_channels, hidden_channels, temporal_features_dim, num_layers):
         super(TemporalGNN, self).__init__()
         self.layers = nn.ModuleList()
+        self.temporal_encoder = TemporalFeatureEncoder(num_features=temporal_features_dim)  # 时间特征编码器
         for _ in range(num_layers):
             layer_set = LayerSet(in_channels, hidden_channels, temporal_features_dim)
             self.layers.append(layer_set)
     
     def forward(self, x, edge_index, timestamps, time_diffs):
         z = x
-        temporal_features = encode_temporal_features(timestamps)
+        # 使用时间特征编码器生成时间特征
+        temporal_features = self.temporal_encoder(timestamps)
         for layer in self.layers:
             z = layer(z, edge_index, temporal_features, time_diffs)
         return z
