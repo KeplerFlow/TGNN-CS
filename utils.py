@@ -1,6 +1,7 @@
 import torch
 import networkx as nx
 import numpy as np
+import random
 from itertools import combinations
 from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
@@ -48,6 +49,19 @@ def sample_graph_nodes(sub_graph, proportions=(0.5, 0.3, 0.2), total_proportion=
 
     return sampled_nodes
 
+def generate_negative_samples(subgraph, positive_indices, num_negatives):
+    all_indices = set(range(subgraph.num_nodes))
+    positive_indices_set = set(positive_indices.tolist())
+    negative_candidates = list(all_indices - positive_indices_set)
+    
+    if not negative_candidates:
+        raise ValueError("No negative candidates available for sampling.")
+    
+    if len(negative_candidates) < num_negatives:
+        # 如果可用的负样本不足，则重复一些选择
+        return torch.tensor(random.choices(negative_candidates, k=num_negatives))
+    else:
+        return torch.tensor(random.sample(negative_candidates, k=num_negatives))
 
 def calculate_temporal_modularity_for_jumps(data, sampled_nodes, max_jumps):
     if not torch.all((data.timestamp.squeeze() >= data.start_time) & (data.timestamp.squeeze() < data.end_time)):

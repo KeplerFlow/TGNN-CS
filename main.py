@@ -63,6 +63,7 @@ for subgraph in subgraphs:
         unique_edges = subgraph.unique_edges
         timestamp_lists = subgraph.timestamp_lists
         current_time=subgraph.start_time
+        neg_idxs = generate_negative_samples(subgraph, neighbor_idx, num_negatives=10)  # 可调整负样本数量
         
         # 前向传播
         z = model(x, edge_index, timestamps, time_diffs, unique_edges, timestamp_lists)
@@ -71,7 +72,8 @@ for subgraph in subgraphs:
         loss = criterion(
             z=z,
             query_idx=query_idx,
-            neighbor_idx=neighbor_idx,
+            neg_idxs=neg_idxs,
+            neighbor_idxs=neighbor_idx,
             edge_times=timestamps,
             current_time=subgraph.end_time,
             G=subgraph
