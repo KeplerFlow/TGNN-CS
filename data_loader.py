@@ -36,7 +36,7 @@ def split_graph_by_time_pyg(graph, days):
     while start_time <= max_time:
         end_time = start_time + time_window
         mask = (edge_attr >= start_time) & (edge_attr < end_time)
-        
+
         if mask.any():
             sub_edge_index = edge_index[:, mask]
             sub_edge_attr = edge_attr[mask].unsqueeze(1)
@@ -49,7 +49,27 @@ def split_graph_by_time_pyg(graph, days):
             
             # 更新边索引使用新的节点ID
             remapped_edge_index = node_idx[sub_edge_index]
+
+            # 创建字典来存储每条边的时间戳列表
+            edge_dict = {}
+            for i in range(remapped_edge_index.shape[1]):
+                edge = tuple(remapped_edge_index[:, i].tolist())
+                timestamp = sub_edge_attr[i].item()
+                if edge in edge_dict:
+                    edge_dict[edge].append(timestamp)
+                else:
+                    edge_dict[edge] = [timestamp]
             
+            # 生成不重复的边和对应的时间戳列表
+            # 将字典中的边转换为tensor格式
+            unique_edges = torch.tensor([edge for edge in edge_dict.keys()], dtype=torch.long).t()
+            timestamp_lists = []
+            for edge,times in edge_dict.items():
+                timestamp_lists.append(times)
+
+            # 对每个边的时间戳列表进行排序
+            timestamp_lists = [sorted(times) for times in timestamp_lists]           
+
             # 创建新的子图，确保边属性被命名为timestamp,并保存节点映射
             sub_graph = Data(
                 edge_index=remapped_edge_index,
@@ -57,7 +77,9 @@ def split_graph_by_time_pyg(graph, days):
                 num_nodes=node_idx.max().item() + 1,
                 node_remapped_idx=node_idx,
                 start_time=start_time,
-                end_time=end_time
+                end_time=end_time,
+                unique_edges=unique_edges,
+                timestamp_lists=timestamp_lists
             )
 
             # 转换为NetworkX图计算k-core
