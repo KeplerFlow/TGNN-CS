@@ -70,6 +70,9 @@ def split_graph_by_time_pyg(graph, days):
             # 对每个边的时间戳列表进行排序
             timestamp_lists = [sorted(times) for times in timestamp_lists]           
 
+            # TODO
+            # 尚未转化为完全无向图 , 存在 u,v 可能不存在 v,u
+
             # 创建新的子图，确保边属性被命名为timestamp,并保存节点映射
             sub_graph = Data(
                 edge_index=remapped_edge_index,

@@ -20,7 +20,7 @@ file_path = "../TCS/data/sx-mathoverflow.txt"
 graph =  read_graph_from_txt_pyg(file_path)
 print(f"successfully read graph")
 
-window_size = 21
+window_size = 7
 
 subgraphs = split_graph_by_time_pyg(graph,window_size)  # x days window
 print(f"successfully split graph")
@@ -60,9 +60,12 @@ for subgraph in subgraphs:
         edge_index = subgraph.edge_index
         timestamps = subgraph.timestamp.squeeze()
         time_diffs = timestamps - subgraph.start_time
+        unique_edges = subgraph.unique_edges
+        timestamp_lists = subgraph.timestamp_lists
+        current_time=subgraph.start_time
         
         # 前向传播
-        z = model(x, edge_index, timestamps, time_diffs)
+        z = model(x, edge_index, timestamps, time_diffs, unique_edges, timestamp_lists)
         
         # 计算损失
         loss = criterion(
