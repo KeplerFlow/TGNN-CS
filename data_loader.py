@@ -8,13 +8,14 @@ from torch_geometric.utils import to_networkx
 def read_graph_from_txt_pyg(file_path):
     # 读取文件
     data = pd.read_csv(file_path, sep=' ', header=None, names=['source', 'target', 'timestamp'])
-    
+
     # 将源节点和目标节点转换为PyTorch tensor
     edge_index = torch.tensor(data[['source', 'target']].values.T, dtype=torch.long)
     
     # 创建边的特征，例如时间戳
     edge_attr = torch.tensor(data['timestamp'].values, dtype=torch.long).unsqueeze(1)
-    
+    print(f"edge_index shape: {edge_index.shape}")
+    print(f"edge_attr shape: {edge_attr.shape}")
     # 创建PyTorch Geometric图
     G_pyg = Data(edge_index=edge_index, edge_attr=edge_attr)
     
@@ -23,14 +24,14 @@ def read_graph_from_txt_pyg(file_path):
 def split_graph_by_time_pyg(graph, days):
     seconds_in_day = 86400
     time_window = days * seconds_in_day
-    
+
     subgraphs = []
     edge_index = graph.edge_index
-    edge_attr = graph.edge_attr.view(-1)
+    edge_attr = graph.edge_attr.squeeze()
     
     min_time = torch.min(edge_attr).item()
     max_time = torch.max(edge_attr).item()
-    
+
     start_time = min_time
     while start_time <= max_time:
         end_time = start_time + time_window
@@ -59,7 +60,7 @@ def split_graph_by_time_pyg(graph, days):
                 end_time=end_time
             )
 
-             # 转换为NetworkX图计算k-core
+            # 转换为NetworkX图计算k-core
             G_nx = to_networkx(sub_graph, to_undirected=True)
             
             #remove self-loops

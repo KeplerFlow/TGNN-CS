@@ -20,7 +20,7 @@ file_path = "../TCS/data/sx-mathoverflow.txt"
 graph =  read_graph_from_txt_pyg(file_path)
 print(f"successfully read graph")
 
-window_size = 7
+window_size = 21
 
 subgraphs = split_graph_by_time_pyg(graph,window_size)  # x days window
 print(f"successfully split graph")

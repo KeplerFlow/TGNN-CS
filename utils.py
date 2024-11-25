@@ -6,30 +6,21 @@ from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
 
 def initialize_features(data, dimensions=128):
-    # 转换为NetworkX图用于k-core计算
-    G_nx = to_networkx(data, to_undirected=True)
-    
-    # 移除自环
-    G_nx.remove_edges_from(nx.selfloop_edges(G_nx))
-    
-    # 计算图的k-core
-    coreness_dict = nx.core_number(G_nx)
-    
     # 找到最大的k-core值，用于归一化
-    max_coreness = max(coreness_dict.values()) if coreness_dict else 1
+    max_coreness = data.k_core.max().item() if data.k_core.numel() > 0 else 1
 
     # 初始化节点特征
     node_features = torch.zeros((data.num_nodes, dimensions))
     
     # 为每个节点生成归一化的coreness特征并广播到128维
-    for node in G_nx.nodes():
-        normalized_coreness = coreness_dict[node] / max_coreness
+    for node in range(data.num_nodes):
+        normalized_coreness = data.k_core[node].item() / max_coreness
         coreness_vector = torch.full((dimensions,), normalized_coreness, dtype=torch.float32)
         node_features[node] = coreness_vector
     
     return node_features
 
-def sample_graph_nodes(sub_graph, proportions=(0.5, 0.3, 0.2)):
+def sample_graph_nodes(sub_graph, proportions=(0.5, 0.3, 0.2), total_proportion=0.1):
     # 获取节点的k-core值
     k_cores = sub_graph.k_core.numpy()  # 假设k_core是存储在子图中的Tensor
 
@@ -49,6 +40,11 @@ def sample_graph_nodes(sub_graph, proportions=(0.5, 0.3, 0.2)):
         np.random.choice(medium_core_nodes, num_medium, replace=False),
         np.random.choice(low_core_nodes, num_low, replace=False)
     ])
+
+    # 进一步采样以确保总数为子图节点的10%
+    total_sample_size = int(len(sub_graph.k_core) * total_proportion)
+    if len(sampled_nodes) > total_sample_size:
+        sampled_nodes = np.random.choice(sampled_nodes, total_sample_size, replace=False)
 
     return sampled_nodes
 
@@ -130,7 +126,7 @@ def temporal_modularity(G, C, edge_timestamps, t_s):
         if total_edges == 0:  # 避免除以0
             return 0.0
             
-        modularity = (core_sum / 1) * (2 * len(E_C) - (d_C**2 / (2 * total_edges)))
+        modularity = (core_sum / 2*len(C)) * (2 * len(E_C) - (d_C**2 / (2 * total_edges)))
 
         # 计算时间因子
         time_diffs = []
@@ -149,23 +145,6 @@ def temporal_modularity(G, C, edge_timestamps, t_s):
     except Exception as e:
         print(f"Error in temporal_modularity: {e}")
         return 0.0
-
-def encode_temporal_features(timestamps, num_features=16):
-    # 生成随机频率和相位偏移
-    omega = torch.randn(num_features)  # [num_features]
-    phi = torch.randn(num_features)    # [num_features]
-    
-    # 广播时间戳
-    t = timestamps.unsqueeze(1)  # [num_edges, 1]
-    
-    # 计算随机傅里叶特征
-    linear_term = omega[0] * t + phi[0]
-    sin_terms = torch.sin(omega[1:] * t + phi[1:])
-    
-    # 拼接线性项和正弦项
-    temporal_features = torch.cat([linear_term, sin_terms], dim=1)  # [num_edges, num_features]
-    
-    return temporal_features
 
 def get_optimal_subgraphs(data, node_optimal_jumps):
     # 转换为NetworkX图以便使用其API
