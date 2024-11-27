@@ -20,7 +20,7 @@ file_path = "../TCS/data/sx-mathoverflow.txt"
 graph =  read_graph_from_txt_pyg(file_path)
 print(f"successfully read graph")
 
-window_size = 7
+window_size = 21
 
 subgraphs = split_graph_by_time_pyg(graph,window_size)  # x days window
 print(f"successfully split graph")
@@ -37,24 +37,23 @@ model = TemporalGNN(
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = TemporalContrastiveLoss()
 num_epochs = 50
+
 print(f"begin to train")
-# 训练循环
 for subgraph in subgraphs:
     subgraph.x = initialize_features(subgraph)
     sampled_nodes = sample_graph_nodes(subgraph)  # 采样一些节点作为查询节点
     node_optimal_jumps = calculate_temporal_modularity_for_jumps(subgraph, sampled_nodes, 3)
+    print(f"the optimal jumps: {node_optimal_jumps}")
     optimal_subgraphs = get_optimal_subgraphs(subgraph, node_optimal_jumps)
+    # print(f"the optimal subgraphs: {optimal_subgraphs}")
     for epoch in range(num_epochs):
 
         model.train()
         total_loss = 0
-        
+
         # 随机选择一个查询节点
         query_idx = torch.tensor([random.choice(sampled_nodes)])
-        
-        # 获取查询节点的最优子图中的节点作为邻居节点
-        neighbor_idx = torch.tensor(list(optimal_subgraphs[query_idx.item()]))
-        
+
         # 准备数据
         x = subgraph.x
         edge_index = subgraph.edge_index
@@ -62,37 +61,64 @@ for subgraph in subgraphs:
         time_diffs = timestamps - subgraph.start_time
         unique_edges = subgraph.unique_edges
         timestamp_lists = subgraph.timestamp_lists
-        current_time=subgraph.start_time
-        neg_idxs = generate_negative_samples(subgraph, neighbor_idx, num_negatives=10)  # 可调整负样本数量
+
+        current_time = subgraph.start_time
+        # 计算时间窗口的中点
+        t_s = subgraph.start_time
+        t_e = subgraph.end_time 
+        time_window = t_e - t_s
+        mid_point = t_s + time_window // 2
         
+        # 更新时间窗口为一半大小
+        t_s = mid_point - time_window // 4  # 从中点往前1/4窗口
+        t_e = mid_point + time_window // 4  # 从中点往后1/4窗口
+        t_s = subgraph.start_time
+        t_e = subgraph.end_time
+
         # 前向传播
         z = model(x, edge_index, timestamps, time_diffs, unique_edges, timestamp_lists)
-        
+
+        # 社区搜索
+        communities = community_search(z, query_idx, subgraph, t_s, t_e)
+
+        # 将社区中的节点作为邻居节点
+        query_idx_value = query_idx.item()
+
+        neighbor_idx = torch.tensor(list(optimal_subgraphs[query_idx_value]))
+
+        # 计算社区和子图节点占比
+        community_size = len(communities)
+        subgraph_size = subgraph.num_nodes
+        node_ratio = community_size / subgraph_size
+        print(f"社区节点数: {community_size}, 子图节点总数: {subgraph_size}，邻居节点数: {len(neighbor_idx)}")
+        print(f"社区节点占比: {node_ratio:.2%}")
+
+        # 生成负样本
+        # neg_idxs = generate_negative_samples(subgraph, neighbor_idx, num_negatives=10)
+
+        if (epoch==45):
+            TD_S, TC_S = evaluate_community(subgraph, communities, t_s, t_e)
+            print(f"社区的时间密度 TD(S): {TD_S:.4f}")
+            print(f"社区的时间割 TC(S): {TC_S:.4f}")
+
         # 计算损失
         loss = criterion(
             z=z,
             query_idx=query_idx,
-            neg_idxs=neg_idxs,
-            neighbor_idxs=neighbor_idx,
+            neighbor_idx=neighbor_idx,
             edge_times=timestamps,
             current_time=subgraph.end_time,
             G=subgraph
         )
-        
+
         # 反向传播和优化
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
-        
+
         print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
 
-# evaluate the model
-unseen_file_path = "../TCS/data/unseen_graph.txt"
-unseen_graph = read_graph_from_txt_pyg(unseen_file_path)
-print(f"successfully read unseen graph")
-
-# 将未见过的图分割为子图
-unseen_subgraphs = split_graph_by_time_pyg(unseen_graph, window_size)  # 使用相同的时间窗口
+    renturn 
 
 # 使用训练好的模型生成节点嵌入
 model.eval()  # 切换到评估模式

@@ -5,6 +5,8 @@ import random
 from itertools import combinations
 from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
+import torch.nn.functional as F 
+
 
 def initialize_features(data, dimensions=128):
     # 找到最大的k-core值，用于归一化
@@ -219,3 +221,105 @@ def compute_core_numbers(G):
         core_tensor = core_tensor.cuda()
     
     return core_tensor
+
+def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.1):
+    # 获取子图中的节点数
+    num_nodes = subgraph.num_nodes
+
+    # 获取查询节点的嵌入
+    z_query = z[query_idx]  # [embedding_dim]
+
+    # 计算所有节点与查询节点的相似度（余弦相似度）
+    cos_sim = F.cosine_similarity(z_query.unsqueeze(0), z, dim=1)  # [num_nodes]
+
+    # 筛选相似度超过阈值的节点
+    similar_nodes = torch.where(cos_sim >= similarity_threshold)[0]
+
+    # 获取在时间窗口内的边
+    edge_index = subgraph.edge_index  # [2, num_edges]
+    timestamps = subgraph.timestamp.squeeze()  # [num_edges]
+
+    # 筛选时间窗口内的边
+    time_mask = (timestamps >= t_s) & (timestamps <= t_e)
+    edge_index_time = edge_index[:, time_mask]
+
+    # 构建时间窗口内的邻接表
+    adj_list = [[] for _ in range(num_nodes)]
+    for src, dst in edge_index_time.t().tolist():
+        adj_list[src].append(dst)
+        adj_list[dst].append(src)  # 如果是无向图
+
+    # 通过 BFS 扩展，找到与查询节点连接的节点
+    visited = set()
+    queue = [query_idx.item()]
+    while queue:
+        current = queue.pop(0)
+        if current not in visited:
+            visited.add(current)
+            # 只添加相似节点
+            neighbors = [n for n in adj_list[current] if n in similar_nodes]
+            queue.extend(neighbors)
+
+    community_nodes = visited
+    return community_nodes
+
+def evaluate_community(subgraph, community_nodes, t_s, t_e):
+
+    # 将社区节点集合转换为集合类型，方便后续操作
+    S = set(community_nodes)
+    V = set(range(subgraph.num_nodes))
+    V_minus_S = V - S
+
+    # 获取边索引和时间戳
+    edge_index = subgraph.edge_index  # [2, num_edges]
+    timestamps = subgraph.timestamp.squeeze()  # [num_edges]
+
+    # 筛选在时间窗口内的边
+    time_mask = (timestamps >= t_s) & (timestamps <= t_e)
+    edge_index_time = edge_index[:, time_mask]
+    timestamps_time = timestamps[time_mask]
+
+    # 初始化计数器
+    internal_edges = 0       # 社区内部的时间边数量
+    cut_edges = 0            # 跨越社区边界的时间边数量
+    T_S_set = set()          # 社区内部时间戳集合
+    T_vol_S = 0              # 社区内部的时间边数量（考虑时间）
+    T_vol_V_minus_S = 0      # 社区外部的时间边数量（考虑时间）
+
+    # 遍历所有在时间窗口内的边
+    for idx in range(edge_index_time.size(1)):
+        u = edge_index_time[0, idx].item()
+        v = edge_index_time[1, idx].item()
+        t = timestamps_time[idx].item()
+
+        if u in S and v in S:
+            internal_edges += 1
+            T_S_set.add(t)
+            T_vol_S += 1
+        elif (u in S and v in V_minus_S) or (u in V_minus_S and v in S):
+            cut_edges += 1
+        else:
+            T_vol_V_minus_S += 1  # 社区外部的时间边
+
+    # 计算社区节点对的最大可能连接数
+    num_S = len(S)
+    if num_S > 1:
+        max_internal_edges = num_S * (num_S - 1) / 2
+    else:
+        max_internal_edges = 1  # 避免除以零
+
+    # 计算时间密度 TD(S)
+    TD_S = (2 * internal_edges) / (num_S * (num_S - 1) * len(T_S_set)+0.001) if len(T_S_set) > 0 else 0
+
+    # 计算 Tvol(S) 和 Tvol(V \ S)
+    Tvol_S = T_vol_S
+    Tvol_V_minus_S = T_vol_V_minus_S
+
+    # 计算时间割 TC(S)
+    if Tvol_S > 0 and Tvol_V_minus_S > 0:
+        denominator = min(Tvol_S, Tvol_V_minus_S)
+        TC_S = cut_edges / denominator
+    else:
+        TC_S = 0  # 避免除以零
+
+    return TD_S, TC_S
