@@ -222,7 +222,7 @@ def compute_core_numbers(G):
     
     return core_tensor
 
-def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.1):
+def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.01):
     # 获取子图中的节点数
     num_nodes = subgraph.num_nodes
 
@@ -230,10 +230,12 @@ def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.1)
     z_query = z[query_idx]  # [embedding_dim]
 
     # 计算所有节点与查询节点的相似度（余弦相似度）
-    cos_sim = F.cosine_similarity(z_query.unsqueeze(0), z, dim=1)  # [num_nodes]
+    cos_sim = F.cosine_similarity(z_query.unsqueeze(0), z, dim=1).squeeze()  # [num_nodes]
+    print(f"the cos_sim: {cos_sim}")
 
     # 筛选相似度超过阈值的节点
     similar_nodes = torch.where(cos_sim >= similarity_threshold)[0]
+    print(f"the similar nodes: {similar_nodes}")
 
     # 获取在时间窗口内的边
     edge_index = subgraph.edge_index  # [2, num_edges]

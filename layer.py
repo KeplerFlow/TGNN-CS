@@ -47,6 +47,7 @@ class TemporalFeatureEncoder(nn.Module):
         # 在时间维度上求和，得到最终的特征表示
         phi_uv = weighted_features.sum(dim=1)  # [num_edges, num_features]
 
+        phi_uv = torch.tanh(phi_uv)
         return phi_uv
 
 

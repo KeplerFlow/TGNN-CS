@@ -35,7 +35,7 @@ model = TemporalGNN(
 )
 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-criterion = TemporalContrastiveLoss()
+criterion = TemporalContrastiveLoss(temporal_encoder=model.temporal_encoder)
 num_epochs = 50
 
 print(f"begin to train")
@@ -80,6 +80,7 @@ for subgraph in subgraphs:
 
         # 社区搜索
         communities = community_search(z, query_idx, subgraph, t_s, t_e)
+        communities_tensor = torch.tensor(list(communities))
 
         # 将社区中的节点作为邻居节点
         query_idx_value = query_idx.item()
@@ -105,9 +106,11 @@ for subgraph in subgraphs:
         loss = criterion(
             z=z,
             query_idx=query_idx,
-            neighbor_idx=neighbor_idx,
+            neighbor_idx=communities_tensor,
             edge_times=timestamps,
-            current_time=subgraph.end_time,
+            current_time=subgraph.start_time,
+            t_s=t_s,
+            t_e=t_e,
             G=subgraph
         )
 
@@ -117,8 +120,6 @@ for subgraph in subgraphs:
         optimizer.zero_grad()
 
         print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
-
-    renturn 
 
 # 使用训练好的模型生成节点嵌入
 model.eval()  # 切换到评估模式
