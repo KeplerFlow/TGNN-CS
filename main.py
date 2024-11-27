@@ -35,7 +35,7 @@ model = TemporalGNN(
 )
 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-criterion = TemporalContrastiveLoss()
+criterion = TemporalContrastiveLoss(temporal_encoder=model.temporal_encoder)
 num_epochs = 50
 
 print(f"begin to train")
@@ -96,10 +96,10 @@ for subgraph in subgraphs:
         # 生成负样本
         # neg_idxs = generate_negative_samples(subgraph, neighbor_idx, num_negatives=10)
 
-        if (epoch==45):
+        if (epoch==49):
             TD_S, TC_S = evaluate_community(subgraph, communities, t_s, t_e)
-            print(f"社区的时间密度 TD(S): {TD_S:.4f}")
             print(f"社区的时间割 TC(S): {TC_S:.4f}")
+            print(f"社区的时间密度 TD(S): {TD_S:.4f}")
 
         # 计算损失
         loss = criterion(
@@ -108,6 +108,8 @@ for subgraph in subgraphs:
             neighbor_idx=neighbor_idx,
             edge_times=timestamps,
             current_time=subgraph.end_time,
+            t_s=t_s,
+            t_e=t_e,
             G=subgraph
         )
 
@@ -118,7 +120,6 @@ for subgraph in subgraphs:
 
         print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
 
-    renturn 
 
 # 使用训练好的模型生成节点嵌入
 model.eval()  # 切换到评估模式

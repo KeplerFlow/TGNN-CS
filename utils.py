@@ -222,7 +222,7 @@ def compute_core_numbers(G):
     
     return core_tensor
 
-def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.1):
+def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.3):
     # 获取子图中的节点数
     num_nodes = subgraph.num_nodes
 
@@ -230,7 +230,8 @@ def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.1)
     z_query = z[query_idx]  # [embedding_dim]
 
     # 计算所有节点与查询节点的相似度（余弦相似度）
-    cos_sim = F.cosine_similarity(z_query.unsqueeze(0), z, dim=1)  # [num_nodes]
+    cos_sim = F.cosine_similarity(z_query.unsqueeze(0), z, dim=1).squeeze()  # [num_nodes]
+    # print(f"the cos_sim: {cos_sim}")
 
     # 筛选相似度超过阈值的节点
     similar_nodes = torch.where(cos_sim >= similarity_threshold)[0]
@@ -285,6 +286,8 @@ def evaluate_community(subgraph, community_nodes, t_s, t_e):
     T_S_set = set()          # 社区内部时间戳集合
     T_vol_S = 0              # 社区内部的时间边数量（考虑时间）
     T_vol_V_minus_S = 0      # 社区外部的时间边数量（考虑时间）
+    seen_edges = set()        # 去重集合
+    cut_seen_edges = set()    # 跨越社区边界的时间边集合
 
     # 遍历所有在时间窗口内的边
     for idx in range(edge_index_time.size(1)):
@@ -293,32 +296,35 @@ def evaluate_community(subgraph, community_nodes, t_s, t_e):
         t = timestamps_time[idx].item()
 
         if u in S and v in S:
+            
+            edge = (min(u, v), max(u, v))  # 确保边的顺序一致以便去重
+            if edge not in seen_edges:
+                seen_edges.add(edge)  # 添加到去重集合
+            
             internal_edges += 1
             T_S_set.add(t)
             T_vol_S += 1
+
         elif (u in S and v in V_minus_S) or (u in V_minus_S and v in S):
+            edge = (min(u, v), max(u, v))  # 确保边的顺序一致以便去重
+            if edge not in cut_seen_edges:
+                cut_seen_edges.add(edge)  # 添加到去重集合
             cut_edges += 1
         else:
             T_vol_V_minus_S += 1  # 社区外部的时间边
 
     # 计算社区节点对的最大可能连接数
     num_S = len(S)
-    if num_S > 1:
-        max_internal_edges = num_S * (num_S - 1) / 2
-    else:
-        max_internal_edges = 1  # 避免除以零
+    edges_num = len(seen_edges)
+    # 计算时间密度 TD(S) large better
+    TD_S = (2 * internal_edges ) / (num_S * (num_S - 1) * len(T_S_set)+0.00001)
 
-    # 计算时间密度 TD(S)
-    TD_S = (2 * internal_edges) / (num_S * (num_S - 1) * len(T_S_set)+0.001) if len(T_S_set) > 0 else 0
+    cut_edges_num = len(cut_seen_edges)
 
-    # 计算 Tvol(S) 和 Tvol(V \ S)
-    Tvol_S = T_vol_S
-    Tvol_V_minus_S = T_vol_V_minus_S
-
-    # 计算时间割 TC(S)
-    if Tvol_S > 0 and Tvol_V_minus_S > 0:
-        denominator = min(Tvol_S, Tvol_V_minus_S)
-        TC_S = cut_edges / denominator
+    # 计算时间割 TC(S) small better
+    if T_vol_S > 0 and T_vol_V_minus_S > 0:
+        denominator = min(T_vol_S, T_vol_V_minus_S)
+        TC_S = cut_edges_num / denominator
     else:
         TC_S = 0  # 避免除以零
 
