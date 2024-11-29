@@ -220,7 +220,7 @@ def compute_core_numbers(G):
     
     return core_tensor
 
-def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similarity_threshold=0.2, time_similarity_threshold=0.3):
+def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similarity_threshold=0.3, time_similarity_threshold=0.3):
     # 获取子图中的节点数
     num_nodes = subgraph.num_nodes
 
@@ -282,7 +282,6 @@ def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similar
 
     return time_similar_nodes
 
-
 def time_encoding(omega, phi, timestamps):
     t = timestamps.unsqueeze(1)  # [num_timestamps, 1]
     linear_term = omega[0] * t + phi[0]  # [num_timestamps, 1]
@@ -291,7 +290,6 @@ def time_encoding(omega, phi, timestamps):
     phi_t = torch.tanh(phi_t)
     return phi_t
 
-# TODO change the calculate method
 def evaluate_community(subgraph, community_nodes, t_s, t_e):
 
     # 将社区节点集合转换为集合类型，方便后续操作

@@ -84,7 +84,7 @@ class TemporalContrastiveLoss(nn.Module):
 
         # ==================== Loss 2: 核心度接近损失 ====================
         query_core = G.k_core[query_idx]  # 查询节点的核心度
-        neighbor_cores = G.k_core[neighbor_idx]  # 邻居节点的核心度
+        neighbor_cores = G.k_core[neighbor_idx.long()]  # 邻居节点的核心度
 
         # 核心度归一化
         core_min = G.k_core.min().float()

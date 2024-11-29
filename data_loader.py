@@ -5,6 +5,8 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def read_graph_from_txt_pyg(file_path):
     # 读取文件
     data = pd.read_csv(file_path, sep=' ', header=None, names=['source', 'target', 'timestamp'])
