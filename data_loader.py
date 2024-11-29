@@ -11,9 +11,15 @@ def read_graph_from_txt_pyg(file_path):
 
     # 将源节点和目标节点转换为PyTorch tensor
     edge_index = torch.tensor(data[['source', 'target']].values.T, dtype=torch.long)
+
+    # 添加反向边以使图无向
+    edge_index_reversed = edge_index[[1, 0], :]  # 交换行以获得反向边
+    edge_index = torch.cat([edge_index, edge_index_reversed], dim=1)  # 合并原始边和反向边
     
     # 创建边的特征，例如时间戳
     edge_attr = torch.tensor(data['timestamp'].values, dtype=torch.long).unsqueeze(1)
+    edge_attr = torch.cat([edge_attr, edge_attr], dim=0)
+    
     print(f"edge_index shape: {edge_index.shape}")
     print(f"edge_attr shape: {edge_attr.shape}")
     # 创建PyTorch Geometric图
@@ -70,8 +76,7 @@ def split_graph_by_time_pyg(graph, days):
             # 对每个边的时间戳列表进行排序
             timestamp_lists = [sorted(times) for times in timestamp_lists]           
 
-            # TODO
-            # 尚未转化为完全无向图 , 存在 u,v 可能不存在 v,u
+            # 已经是无向图,邻接表已经对称            
 
             # 创建新的子图，确保边属性被命名为timestamp,并保存节点映射
             sub_graph = Data(

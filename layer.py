@@ -4,7 +4,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 
 class TemporalFeatureEncoder(nn.Module):
-    def __init__(self, num_features=16):
+    def __init__(self, num_features=64):
         super(TemporalFeatureEncoder, self).__init__()
         self.omega = nn.Parameter(torch.randn(num_features))
         self.phi = nn.Parameter(torch.randn(num_features))
@@ -150,7 +150,9 @@ class LayerSet(nn.Module):
         self.fusion = FeatureFusionLayer(hidden_channels, in_channels)
 
     def forward(self, z, edge_index, temporal_features, time_diffs,unique_edges):
+        # 后64维为时间特征
         r_u = self.message_passing(z, unique_edges, temporal_features)
+        # 前64维为结构特征
         gamma_u = self.structural_feature(z, edge_index, time_diffs)
         z = self.fusion(r_u, gamma_u, z)
         return z

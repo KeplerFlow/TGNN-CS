@@ -78,8 +78,7 @@ def calculate_temporal_modularity_for_jumps(data, sampled_nodes, max_jumps):
         dst = data.edge_index[1, i].item()
         timestamp = data.timestamp[i].item()
         G[src][dst]['timestamp'] = timestamp
-        G[dst][src]['timestamp'] = timestamp  # This is redundant in an undirected graph
-    
+        
     # Create a mapping from edges to their timestamps
     edge_timestamps = {(u, v): G[u][v]['timestamp'] for u, v in G.edges()}
     
@@ -264,24 +263,19 @@ def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.3)
     community_nodes = visited
     return community_nodes
 
+# TODO change the calculate method
 def evaluate_community(subgraph, community_nodes, t_s, t_e):
 
     # 将社区节点集合转换为集合类型，方便后续操作
     S = set(community_nodes)
     V = set(range(subgraph.num_nodes))
-    V_minus_S = V - S
 
     # 获取边索引和时间戳
     edge_index = subgraph.edge_index  # [2, num_edges]
     timestamps = subgraph.timestamp.squeeze()  # [num_edges]
 
-    # 筛选在时间窗口内的边
-    time_mask = (timestamps >= t_s) & (timestamps <= t_e)
-    edge_index_time = edge_index[:, time_mask]
-    timestamps_time = timestamps[time_mask]
-
     # 初始化计数器
-    internal_edges = 0       # 社区内部的时间边数量
+    internal_edges = 0       # 时间边数量
     cut_edges = 0            # 跨越社区边界的时间边数量
     T_S_set = set()          # 社区内部时间戳集合
     T_vol_S = 0              # 社区内部的时间边数量（考虑时间）
@@ -289,42 +283,35 @@ def evaluate_community(subgraph, community_nodes, t_s, t_e):
     seen_edges = set()        # 去重集合
     cut_seen_edges = set()    # 跨越社区边界的时间边集合
 
-    # 遍历所有在时间窗口内的边
-    for idx in range(edge_index_time.size(1)):
-        u = edge_index_time[0, idx].item()
-        v = edge_index_time[1, idx].item()
-        t = timestamps_time[idx].item()
-
+    for idx in range(edge_index.size(1)):
+        u = edge_index[0, idx].item()
+        v = edge_index[1, idx].item()
+        t = timestamps[idx].item()
+        internal_edges+=1
         if u in S and v in S:
-            
             edge = (min(u, v), max(u, v))  # 确保边的顺序一致以便去重
             if edge not in seen_edges:
                 seen_edges.add(edge)  # 添加到去重集合
-            
-            internal_edges += 1
             T_S_set.add(t)
             T_vol_S += 1
 
-        elif (u in S and v in V_minus_S) or (u in V_minus_S and v in S):
-            edge = (min(u, v), max(u, v))  # 确保边的顺序一致以便去重
-            if edge not in cut_seen_edges:
-                cut_seen_edges.add(edge)  # 添加到去重集合
+        if u in S and v not in S:
             cut_edges += 1
-        else:
-            T_vol_V_minus_S += 1  # 社区外部的时间边
+        if u in S :
+            T_vol_V_minus_S+=1
 
     # 计算社区节点对的最大可能连接数
     num_S = len(S)
     edges_num = len(seen_edges)
     # 计算时间密度 TD(S) large better
-    TD_S = (2 * internal_edges ) / (num_S * (num_S - 1) * len(T_S_set)+0.00001)
+    TD_S = (2 * T_vol_S ) / (num_S * (num_S - 1) * len(T_S_set)+0.00001)
 
     cut_edges_num = len(cut_seen_edges)
 
     # 计算时间割 TC(S) small better
     if T_vol_S > 0 and T_vol_V_minus_S > 0:
-        denominator = min(T_vol_S, T_vol_V_minus_S)
-        TC_S = cut_edges_num / denominator
+        denominator = min(internal_edges-T_vol_V_minus_S, T_vol_V_minus_S)
+        TC_S = cut_edges / denominator
     else:
         TC_S = 0  # 避免除以零
 
