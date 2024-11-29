@@ -83,6 +83,8 @@ class TemporalContrastiveLoss(nn.Module):
                 loss_time = F.mse_loss(mean_phi_t_window, mean_phi_t_neighbors)
 
         # ==================== Loss 2: 核心度接近损失 ====================
+        query_idx = query_idx.to(device)
+        G.k_core = G.k_core.to(device)
         query_core = G.k_core[query_idx]  # 查询节点的核心度
         neighbor_cores = G.k_core[neighbor_idx.long()]  # 邻居节点的核心度
 

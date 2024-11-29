@@ -31,7 +31,7 @@ model = TemporalGNN(
     hidden_channels=64,
     temporal_features_dim=64,  # 你可以根据需要调整
     num_layers=3
-)
+).to(device)
 # model.load_state_dict(torch.load("temporal_gnn_model.pth"))
 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -41,6 +41,13 @@ num_epochs = 50
 print(f"begin to train")
 for subgraph in subgraphs:
     subgraph.x = initialize_features(subgraph)
+    subgraph.x = subgraph.x.to(device)
+    subgraph.edge_index = subgraph.edge_index.to(device)
+    subgraph.timestamp = subgraph.timestamp.to(device)
+    subgraph.unique_edges = subgraph.unique_edges.to(device)
+    # 假设 subgraph.timestamp_lists 是一个列表，每个元素是一个时间戳列表
+    subgraph.timestamp_lists = [torch.tensor(times, dtype=torch.float32).to(device) for times in subgraph.timestamp_lists]
+
     sampled_nodes = sample_graph_nodes(subgraph)  # 采样一些节点作为查询节点
     node_optimal_jumps = calculate_temporal_modularity_for_jumps(subgraph, sampled_nodes, 3)
     optimal_subgraphs = get_optimal_subgraphs(subgraph, node_optimal_jumps)
@@ -79,7 +86,12 @@ for subgraph in subgraphs:
             print(f"社区的时间割 TC(S): {TC_S:.4f}")
             print(f"社区的时间密度 TD(S): {TD_S:.4f}")
             print(f"社区节点数: {len(communities)}, 邻居节点数: {len(neighbor_idx)}, 社区节点占比: {len(communities)/subgraph.num_nodes:.2%}")
+        # 在将张量传递给 criterion 或其他操作前，显式地将它们移到 GPU 上
+        query_idx = query_idx.to(device)
+        neighbor_idx = neighbor_idx.to(device)
 
+        # 同样确保其他张量也在同一设备上
+        edge_times = subgraph.timestamp.squeeze().to(device)
         # 计算损失
         loss = criterion(
             z=z,
