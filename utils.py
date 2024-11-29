@@ -220,7 +220,7 @@ def compute_core_numbers(G):
     
     return core_tensor
 
-def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similarity_threshold=0.3, time_similarity_threshold=0.3):
+def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similarity_threshold=0.4, time_similarity_threshold=0.4):
     # 获取子图中的节点数
     num_nodes = subgraph.num_nodes
 
