@@ -23,8 +23,6 @@ window_size = 7
 
 subgraphs = split_graph_by_time_pyg(graph,window_size)  # x days window
 print(f"successfully split graph")
-#validate the subgraphs
-# validate_and_summarize_subgraphs(subgraphs, graph)
 
 model = TemporalGNN(
     in_channels=128,
@@ -78,7 +76,7 @@ for subgraph in subgraphs:
         z = model(x, edge_index, timestamps, time_diffs, unique_edges, timestamp_lists)
 
         # 社区搜索
-        communities = community_search(z, query_idx, subgraph, t_s, t_e)
+        communities = community_search(z, query_idx, subgraph, t_s, t_e,model.temporal_encoder)
 
         # 将社区中的节点作为邻居节点
         query_idx_value = query_idx.item()

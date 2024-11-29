@@ -7,7 +7,6 @@ from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
 import torch.nn.functional as F 
 
-
 def initialize_features(data, dimensions=128):
     # 找到最大的k-core值，用于归一化
     max_coreness = data.k_core.max().item() if data.k_core.numel() > 0 else 1
@@ -221,7 +220,7 @@ def compute_core_numbers(G):
     
     return core_tensor
 
-def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.3):
+def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similarity_threshold=0.2, time_similarity_threshold=0.3):
     # 获取子图中的节点数
     num_nodes = subgraph.num_nodes
 
@@ -230,10 +229,9 @@ def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.3)
 
     # 计算所有节点与查询节点的相似度（余弦相似度）
     cos_sim = F.cosine_similarity(z_query.unsqueeze(0), z, dim=1).squeeze()  # [num_nodes]
-    # print(f"the cos_sim: {cos_sim}")
 
     # 筛选相似度超过阈值的节点
-    similar_nodes = torch.where(cos_sim >= similarity_threshold)[0]
+    similar_nodes = set(torch.where(cos_sim >= similarity_threshold)[0].tolist())
 
     # 获取在时间窗口内的边
     edge_index = subgraph.edge_index  # [2, num_edges]
@@ -242,6 +240,7 @@ def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.3)
     # 筛选时间窗口内的边
     time_mask = (timestamps >= t_s) & (timestamps <= t_e)
     edge_index_time = edge_index[:, time_mask]
+    edge_times = timestamps[time_mask]
 
     # 构建时间窗口内的邻接表
     adj_list = [[] for _ in range(num_nodes)]
@@ -260,8 +259,37 @@ def community_search(z, query_idx, subgraph, t_s, t_e, similarity_threshold=0.3)
             neighbors = [n for n in adj_list[current] if n in similar_nodes]
             queue.extend(neighbors)
 
-    community_nodes = visited
-    return community_nodes
+    community_nodes = list(visited)
+    time_similar_nodes = set()
+
+    # 获取社区节点的时间嵌入
+    node_time_encodings = z[community_nodes][:, -64:]  # [num_community_nodes, 64]
+
+    # 计算时间窗口内的时间编码
+    phi_t_window = time_encoding(temporal_encoder.omega, temporal_encoder.phi, edge_times)  # [num_edges, 64]
+
+    # 计算相似度矩阵
+    time_sims = F.cosine_similarity(node_time_encodings.unsqueeze(1), phi_t_window.unsqueeze(0), dim=2)  # [num_community_nodes, num_edges]
+
+    # 筛选超过阈值的节点对
+    time_similar_pairs = (time_sims >= time_similarity_threshold).nonzero(as_tuple=False)  # [num_pairs, 2]
+
+    # 获取对应的节点索引
+    for i, j in time_similar_pairs.tolist():
+        src, dst = edge_index_time[:, j].tolist()
+        time_similar_nodes.add(src)
+        time_similar_nodes.add(dst)
+
+    return time_similar_nodes
+
+
+def time_encoding(omega, phi, timestamps):
+    t = timestamps.unsqueeze(1)  # [num_timestamps, 1]
+    linear_term = omega[0] * t + phi[0]  # [num_timestamps, 1]
+    sin_terms = torch.sin(omega[1:] * t + phi[1:])  # [num_timestamps, num_features - 1]
+    phi_t = torch.cat([linear_term, sin_terms], dim=1)  # [num_timestamps, num_features]
+    phi_t = torch.tanh(phi_t)
+    return phi_t
 
 # TODO change the calculate method
 def evaluate_community(subgraph, community_nodes, t_s, t_e):
