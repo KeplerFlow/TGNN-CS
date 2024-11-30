@@ -19,7 +19,7 @@ file_path = "../TCS/data/CollegeMsg.txt"
 graph =  read_graph_from_txt_pyg(file_path)
 print(f"successfully read graph")
 
-window_size = 7
+window_size = 19
 
 subgraphs = split_graph_by_time_pyg(graph,window_size)  # x days window
 print(f"successfully split graph")
@@ -38,6 +38,8 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = TemporalContrastiveLoss(temporal_encoder=model.temporal_encoder)
 num_epochs = 50
 
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+
 print(f"begin to train")
 for subgraph in subgraphs:
     subgraph.x = initialize_features(subgraph)
@@ -45,54 +47,49 @@ for subgraph in subgraphs:
     subgraph.edge_index = subgraph.edge_index.to(device)
     subgraph.timestamp = subgraph.timestamp.to(device)
     subgraph.unique_edges = subgraph.unique_edges.to(device)
-    # 假设 subgraph.timestamp_lists 是一个列表，每个元素是一个时间戳列表
     subgraph.timestamp_lists = [torch.tensor(times, dtype=torch.float32).to(device) for times in subgraph.timestamp_lists]
 
-    sampled_nodes = sample_graph_nodes(subgraph)  # 采样一些节点作为查询节点
+    sampled_nodes = sample_graph_nodes(subgraph)
     node_optimal_jumps = calculate_temporal_modularity_for_jumps(subgraph, sampled_nodes, 3)
     optimal_subgraphs = get_optimal_subgraphs(subgraph, node_optimal_jumps)
-    # print(f"the optimal subgraphs: {optimal_subgraphs}")
-    for epoch in range(num_epochs):
 
+    best_community = None
+    best_TD = -1
+
+    for epoch in range(num_epochs):
         model.train()
         total_loss = 0
 
-        # 随机选择一个查询节点
         query_idx = torch.tensor([random.choice(sampled_nodes)])
-        # 计算时间窗口的中点
         t_s = subgraph.start_time
         t_e = subgraph.end_time 
         time_window = t_e - t_s
         mid_point = t_s + time_window // 2
         
-        # 更新时间窗口为一半大小
-        t_s = mid_point - time_window // 4  # 从中点往前1/4窗口
-        t_e = mid_point + time_window // 4  # 从中点往后1/4窗口
+        t_s = mid_point - time_window // 4
+        t_e = mid_point + time_window // 4
         t_s = subgraph.start_time
         t_e = subgraph.end_time
 
-        # 前向传播
         z = model(subgraph.x, subgraph.edge_index, subgraph.timestamp.squeeze(), subgraph.timestamp.squeeze() - subgraph.start_time, subgraph.unique_edges, subgraph.timestamp_lists)
 
-        communities = community_search(z, query_idx, subgraph, t_s, t_e,model.temporal_encoder)
+        communities = community_search(z, query_idx, subgraph, t_s, t_e, model.temporal_encoder)
 
-        if(len(communities)>0):
+        if len(communities) > 0:
             neighbor_idx = torch.tensor(np.array(list(communities)), dtype=torch.long)
         else:
-            neighbor_idx = torch.tensor(list(optimal_subgraphs[query_idx.item()])) 
+            neighbor_idx = torch.tensor(list(optimal_subgraphs[query_idx.item()]))
 
         TD_S, TC_S = evaluate_community(subgraph, communities, t_s, t_e)
-        if (epoch==49):    
-            print(f"社区的时间割 TC(S): {TC_S:.4f}")
-            print(f"社区的时间密度 TD(S): {TD_S:.4f}")
-            print(f"社区节点数: {len(communities)}, 邻居节点数: {len(neighbor_idx)}, 社区节点占比: {len(communities)/subgraph.num_nodes:.2%}")
-        # 在将张量传递给 criterion 或其他操作前，显式地将它们移到 GPU 上
+        
+        if len(communities) > 10 and TD_S > best_TD:
+            best_community = communities
+            best_TD = TD_S
+
         query_idx = query_idx.to(device)
         neighbor_idx = neighbor_idx.to(device)
-
-        # 同样确保其他张量也在同一设备上
         edge_times = subgraph.timestamp.squeeze().to(device)
-        # 计算损失
+
         loss = criterion(
             z=z,
             query_idx=query_idx,
@@ -104,12 +101,19 @@ for subgraph in subgraphs:
             G=subgraph
         )
 
-        # 反向传播和优化
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
+        scheduler.step()
 
         print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
+
+    if best_community is not None:
+        best_community_idx = torch.tensor(list(best_community)).to(device)
+        best_community_embeddings = z[best_community_idx]
+        print(f"最佳社区节点数: {len(best_community)}, 时间密度: {best_TD:.4f}")
+        # print(f"最佳社区节点表示: {best_community_embeddings}")
+        print(f"时间窗口: {t_s} - {t_e}")
 
 # 在训练结束后保存模型
 torch.save(model.state_dict(), "temporal_gnn_model.pth")

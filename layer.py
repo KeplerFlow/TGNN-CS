@@ -11,7 +11,7 @@ class TemporalFeatureEncoder(nn.Module):
 
     def forward(self, timestamps_list):
         # 将时间戳列表转换为张量列表
-        timestamps_tensors = [torch.tensor(timestamps).float() for timestamps in timestamps_list]
+        timestamps_tensors = timestamps_list
         # 使用pad_sequence将序列填充到相同长度
         padded_timestamps = pad_sequence(timestamps_tensors, batch_first=True, padding_value=0.0)  # [num_edges, max_len]
         # 创建掩码，标记有效的时间戳位置
@@ -30,7 +30,11 @@ class TemporalFeatureEncoder(nn.Module):
         last_timestamps = padded_timestamps.gather(1, indices).squeeze(1)  # [num_edges]
 
         # 计算deltas
-        deltas = last_timestamps.unsqueeze(1) - padded_timestamps  # [num_edges, max_len]
+        deltas_next = last_timestamps.unsqueeze(1) - padded_timestamps  # [num_edges, max_len]
+        deltas_prev = padded_timestamps - padded_timestamps.roll(shifts=1, dims=1)  # [num_edges, max_len]
+        deltas_prev[:, 0] = 0  # 第一个元素没有前一个元素，设为0
+        deltas = (deltas_next.abs() + deltas_prev.abs()) / 2  # 取绝对值平均
+
         # 将填充位置的deltas设为0
         deltas = deltas * mask.float()
 

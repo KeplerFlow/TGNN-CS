@@ -4,6 +4,8 @@ from layer import *
 from utils import *
 import torch.nn.functional as F
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class TemporalGNN(nn.Module):
     def __init__(self, in_channels, hidden_channels, temporal_features_dim, num_layers):
         super(TemporalGNN, self).__init__()
@@ -14,20 +16,22 @@ class TemporalGNN(nn.Module):
             self.layers.append(layer_set)
     
     def forward(self, x, edge_index, timestamps, time_diffs,unique_edges, timestamp_lists):
-        z = x
+        # 确保所有张量都在同一设备上
+        device = x.device
         # 使用时间特征编码器生成时间特征
         temporal_features = self.temporal_encoder(timestamp_lists)
         for layer in self.layers:
-            z = layer(z, edge_index, temporal_features, time_diffs,unique_edges)
-        return z
+            x = layer(x.to(device), edge_index.to(device), temporal_features.to(device), 
+                  time_diffs.to(device), unique_edges.to(device))
+        return x
 
 class TemporalContrastiveLoss(nn.Module):
     def __init__(self, temporal_encoder, weight_time=0.5, weight_core=0.5):
         super().__init__()
         self.weight_time = weight_time
         self.weight_core = weight_core
-        self.omega = temporal_encoder.omega.clone()
-        self.phi = temporal_encoder.phi.clone()
+        self.omega = temporal_encoder.omega.clone().to(device)
+        self.phi = temporal_encoder.phi.clone().to(device)
 
     def time_encoding(self, timestamps):
         """
