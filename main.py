@@ -93,7 +93,7 @@ for subgraph in subgraphs:
         loss = criterion(
             z=z,
             query_idx=query_idx,
-            neighbor_idx=neighbor_idx,
+            neighbor_idx=torch.tensor(list(optimal_subgraphs[query_idx.item()])).to(device),
             edge_times=subgraph.timestamp.squeeze(),
             current_time=subgraph.end_time,
             t_s=t_s,

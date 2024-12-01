@@ -87,8 +87,10 @@ class TemporalMessagePassingLayer(nn.Module):
         
         # 最终更新
         r_u = F.relu(self_features + aggregated_messages)  # [num_nodes, out_channels]
-        
-        return r_u
+
+        r_u_normalized = F.normalize(r_u, p=2, dim=1)  # L2 归一化
+
+        return r_u_normalized
 
 class StructuralFeatureLayer(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -129,7 +131,9 @@ class StructuralFeatureLayer(nn.Module):
         # 最终更新
         gamma_u = F.relu(self_features + aggregated_features)  # [num_nodes, out_channels]
         
-        return gamma_u
+        gamma_u_normalized = F.normalize(gamma_u, p=2, dim=1)  # L2 归一化
+
+        return gamma_u_normalized
 
 class FeatureFusionLayer(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -144,7 +148,11 @@ class FeatureFusionLayer(nn.Module):
         combined = torch.cat([r_u, gamma_u], dim=1)  # [num_nodes, 2 * in_channels]
         h_u = self.ffn(combined)  # [num_nodes, out_channels]
         z_u = z_prev + F.relu(h_u)  # 残差连接
-        return z_u
+        
+        # 对节点表示进行归一化
+        z_u_normalized = F.normalize(z_u, p=2, dim=1)  # L2 归一化
+        
+        return z_u_normalized
 
 class LayerSet(nn.Module):
     def __init__(self, in_channels, hidden_channels, temporal_features_dim):
@@ -153,7 +161,7 @@ class LayerSet(nn.Module):
         self.structural_feature = StructuralFeatureLayer(in_channels, hidden_channels)
         self.fusion = FeatureFusionLayer(hidden_channels, in_channels)
 
-    def forward(self, z, edge_index, temporal_features, time_diffs,unique_edges):
+    def forward(self, z, edge_index, temporal_features, time_diffs, unique_edges):
         # 后64维为时间特征
         r_u = self.message_passing(z, unique_edges, temporal_features)
         # 前64维为结构特征
