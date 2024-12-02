@@ -220,7 +220,7 @@ def compute_core_numbers(G):
     
     return core_tensor
 
-def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similarity_threshold=0.35, time_similarity_threshold=0.35):
+def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similarity_threshold=0.1, time_similarity_threshold=0.1):
     # 获取子图中的节点数
     num_nodes = subgraph.num_nodes
 
@@ -231,12 +231,12 @@ def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similar
     cos_sim = F.cosine_similarity(z_query.unsqueeze(0), z, dim=1).squeeze()  # [num_nodes]
 
     # 一.筛选相似度超过阈值的节点
-    #similar_nodes = set(torch.where(cos_sim >= similarity_threshold)[0].tolist())
+    similar_nodes = set(torch.where(cos_sim >= similarity_threshold)[0].tolist())
 
     # 二.选择相似度较大的前20%的节点
-    num_top_nodes = int(len(cos_sim) * 0.2)
-    top_indices = torch.topk(cos_sim, num_top_nodes).indices
-    similar_nodes = set(top_indices.tolist())
+    # num_top_nodes = int(len(cos_sim) * 0.2)
+    # top_indices = torch.topk(cos_sim, num_top_nodes).indices
+    # similar_nodes = set(top_indices.tolist())
 
     # 获取在时间窗口内的边
     edge_index = subgraph.edge_index  # [2, num_edges]
@@ -277,12 +277,12 @@ def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similar
     time_sims = F.cosine_similarity(node_time_encodings.unsqueeze(1), phi_t_window.unsqueeze(0), dim=2)  # [num_community_nodes, num_edges]
 
     # 一.筛选超过阈值的节点对
-    # time_similar_pairs = (time_sims >= time_similarity_threshold).nonzero(as_tuple=False)  # [num_pairs, 2]
+    time_similar_pairs = (time_sims >= time_similarity_threshold).nonzero(as_tuple=False)  # [num_pairs, 2]
 
     # 二.筛选相似度较大的前50%的节点对
-    num_top_pairs = int(time_sims.numel() * 0.5)
-    top_values, top_indices = torch.topk(time_sims.view(-1), num_top_pairs)
-    time_similar_pairs = torch.stack([top_indices // time_sims.size(1), top_indices % time_sims.size(1)], dim=1)
+    # num_top_pairs = int(time_sims.numel() * 0.5)
+    # top_values, top_indices = torch.topk(time_sims.view(-1), num_top_pairs)
+    # time_similar_pairs = torch.stack([top_indices // time_sims.size(1), top_indices % time_sims.size(1)], dim=1)
 
     # 获取对应的节点索引
     for i, j in time_similar_pairs.tolist():

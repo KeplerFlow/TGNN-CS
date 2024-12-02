@@ -19,7 +19,7 @@ file_path = "../TCS/data/CollegeMsg.txt"
 graph =  read_graph_from_txt_pyg(file_path)
 print(f"successfully read graph")
 
-window_size = 19
+window_size = 5
 
 subgraphs = split_graph_by_time_pyg(graph,window_size)  # x days window
 print(f"successfully split graph")
@@ -39,7 +39,8 @@ criterion = TemporalContrastiveLoss(temporal_encoder=model.temporal_encoder)
 num_epochs = 50
 
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
-
+model = model.to(device)
+model.train()
 print(f"begin to train")
 for subgraph in subgraphs:
     subgraph.x = initialize_features(subgraph)
@@ -50,6 +51,8 @@ for subgraph in subgraphs:
     subgraph.timestamp_lists = [torch.tensor(times, dtype=torch.float32).to(device) for times in subgraph.timestamp_lists]
 
     sampled_nodes = sample_graph_nodes(subgraph)
+    if len(sampled_nodes) == 0:
+        continue 
     node_optimal_jumps = calculate_temporal_modularity_for_jumps(subgraph, sampled_nodes, 3)
     optimal_subgraphs = get_optimal_subgraphs(subgraph, node_optimal_jumps)
 
@@ -57,7 +60,6 @@ for subgraph in subgraphs:
     best_TD = -1
 
     for epoch in range(num_epochs):
-        model.train()
         total_loss = 0
 
         query_idx = torch.tensor([random.choice(sampled_nodes)])
@@ -109,10 +111,8 @@ for subgraph in subgraphs:
         print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
 
     if best_community is not None:
-        best_community_idx = torch.tensor(list(best_community)).to(device)
-        best_community_embeddings = z[best_community_idx]
         print(f"最佳社区节点数: {len(best_community)}, 时间密度: {best_TD:.4f}")
-        # print(f"最佳社区节点表示: {best_community_embeddings}")
+        print(f"子图节点数为:{subgraph.x.shape[0]}")
         print(f"时间窗口: {t_s} - {t_e}")
 
 # 在训练结束后保存模型

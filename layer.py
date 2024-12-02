@@ -2,6 +2,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from torch.nn.utils.rnn import pad_sequence
+import torch_scatter
+
 
 class TemporalFeatureEncoder(nn.Module):
     def __init__(self, num_features=64):
@@ -74,17 +76,15 @@ class TemporalMessagePassingLayer(nn.Module):
         
         # 邻居特征
         neighbor_features = self.W_T(x[col])  # [num_edges, out_channels]
-        
-        # 时间特征编码
-        temporal_encodings = self.temporal_mlp(temporal_features)  # [num_edges, out_channels]
+         # [num_edges, out_channels]
         
         # 消息 = 邻居特征 + 时间特征
-        messages = neighbor_features + temporal_encodings  # [num_edges, out_channels]
+        messages = neighbor_features + temporal_features  # [num_edges, out_channels]
         
         # 聚合消息
         aggregated_messages = torch.zeros(num_nodes, messages.size(1)).to(x.device)  # [num_nodes, out_channels]
-        aggregated_messages.index_add_(0, row, messages)
-        
+        aggregated_messages = torch_scatter.scatter_add(messages, row, dim=0, dim_size=num_nodes)
+
         # 最终更新
         r_u = F.relu(self_features + aggregated_messages)  # [num_nodes, out_channels]
 
@@ -126,8 +126,8 @@ class StructuralFeatureLayer(nn.Module):
         
         # 聚合加权邻居特征
         aggregated_features = torch.zeros(num_nodes, weighted_neighbor_features.size(1)).to(x.device)  # [num_nodes, out_channels]
-        aggregated_features.index_add_(0, row, weighted_neighbor_features)
-        
+        aggregated_messages = torch_scatter.scatter_add(weighted_neighbor_features, row, dim=0, dim_size=num_nodes)
+
         # 最终更新
         gamma_u = F.relu(self_features + aggregated_features)  # [num_nodes, out_channels]
         
