@@ -14,13 +14,14 @@ class TemporalGNN(nn.Module):
         for _ in range(num_layers):
             layer_set = LayerSet(in_channels, hidden_channels, temporal_features_dim)
             self.layers.append(layer_set)
-    
-    def forward(self, x, edge_index, timestamps, time_diffs,unique_edges, timestamp_lists):
+
+    def forward(self, x, edge_index, timestamps, time_diffs, unique_edges, timestamp_lists):
         # 使用时间特征编码器生成时间特征
         temporal_features = self.temporal_encoder(timestamp_lists)
         for layer in self.layers:
             x = layer(x, edge_index, temporal_features, time_diffs, unique_edges)
         return x
+
 
 class TemporalContrastiveLoss(nn.Module):
     def __init__(self, temporal_encoder, weight_time=0.5, weight_core=0.5):
@@ -102,4 +103,3 @@ class TemporalContrastiveLoss(nn.Module):
         total_loss = self.weight_time * loss_time + self.weight_core * loss_core
 
         return total_loss
-

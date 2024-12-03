@@ -74,9 +74,10 @@ for subgraph in subgraphs:
         t_e = subgraph.end_time
 
         z = model(subgraph.x, subgraph.edge_index, subgraph.timestamp.squeeze(), subgraph.timestamp.squeeze() - subgraph.start_time, subgraph.unique_edges, subgraph.timestamp_lists)
-
-        communities = community_search(z, query_idx, subgraph, t_s, t_e, model.temporal_encoder)
-
+        print(f"finish FNN")
+        # communities = community_search(z, query_idx, subgraph, t_s, t_e, model.temporal_encoder)
+        communities = torch.tensor(list(optimal_subgraphs[query_idx.item()]))
+        print(f"finish community_search")
         if len(communities) > 0:
             neighbor_idx = torch.tensor(np.array(list(communities)), dtype=torch.long)
         else:
@@ -104,6 +105,7 @@ for subgraph in subgraphs:
         )
 
         loss.backward()
+        print(f"finish Backward F")
         optimizer.step()
         optimizer.zero_grad()
         scheduler.step()

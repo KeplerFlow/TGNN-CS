@@ -6,6 +6,7 @@ from itertools import combinations
 from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
 import torch.nn.functional as F 
+from torch_geometric.utils import to_undirected
 
 def initialize_features(data, dimensions=128):
     # 找到最大的k-core值，用于归一化
@@ -230,9 +231,8 @@ def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similar
     # 计算所有节点与查询节点的相似度（余弦相似度）
     cos_sim = F.cosine_similarity(z_query.unsqueeze(0), z, dim=1).squeeze()  # [num_nodes]
 
-    # 一.筛选相似度超过阈值的节点
+    # 筛选相似度超过阈值的节点
     similar_nodes = set(torch.where(cos_sim >= similarity_threshold)[0].tolist())
-
     # 二.选择相似度较大的前20%的节点
     # num_top_nodes = int(len(cos_sim) * 0.2)
     # top_indices = torch.topk(cos_sim, num_top_nodes).indices
@@ -256,11 +256,12 @@ def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similar
     # 通过 BFS 扩展，找到与查询节点连接的节点
     visited = set()
     queue = [query_idx.item()]
+    
+    # 使用集合避免重复加入队列
     while queue:
         current = queue.pop(0)
         if current not in visited:
             visited.add(current)
-            # 只添加相似节点
             neighbors = [n for n in adj_list[current] if n in similar_nodes]
             queue.extend(neighbors)
 
@@ -276,13 +277,14 @@ def community_search(z, query_idx, subgraph, t_s, t_e, temporal_encoder, similar
     # 计算相似度矩阵
     time_sims = F.cosine_similarity(node_time_encodings.unsqueeze(1), phi_t_window.unsqueeze(0), dim=2)  # [num_community_nodes, num_edges]
 
-    # 一.筛选超过阈值的节点对
+    # 筛选超过阈值的节点对
     time_similar_pairs = (time_sims >= time_similarity_threshold).nonzero(as_tuple=False)  # [num_pairs, 2]
 
     # 二.筛选相似度较大的前50%的节点对
     # num_top_pairs = int(time_sims.numel() * 0.5)
     # top_values, top_indices = torch.topk(time_sims.view(-1), num_top_pairs)
     # time_similar_pairs = torch.stack([top_indices // time_sims.size(1), top_indices % time_sims.size(1)], dim=1)
+
 
     # 获取对应的节点索引
     for i, j in time_similar_pairs.tolist():
