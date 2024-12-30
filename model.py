@@ -104,20 +104,24 @@ class TemporalGNN(nn.Module):
 
         return x
     
-# Adapter GNN
 class AdapterTemporalGNN(nn.Module):
     def __init__(self,
-                 node_in_channels, 
-                 node_out_channels, 
+                 node_in_channels,
+                 node_out_channels,
                  edge_dim,
-                 adapter_dim=16,  # Adapter隐藏维度
-                 use_adapter3=False  # 是否在第三层后也加Adapter
+                 adapter_dim=16,
+                 use_adapter3=False
                  ):
         super(AdapterTemporalGNN, self).__init__()
-
+        
         # ---------------------
         # 第 1 层 GAT
         # ---------------------
+        # Pre-aggregation adapter
+        self.pre_adapter1 = Adapter(in_channels=node_in_channels, 
+                                  adapter_dim=adapter_dim, 
+                                  edge_dim=edge_dim)
+        
         self.conv1 = GATWithEdgeChannelAttention(
             in_channels=node_in_channels,
             out_channels=64,
@@ -126,13 +130,20 @@ class AdapterTemporalGNN(nn.Module):
             edge_dim=edge_dim,
         )
         self.bn1 = nn.BatchNorm1d(64 * 4)
-        # Adapter
-        # self.adapter1 = Adapter(in_channels=64 * 4, adapter_dim=adapter_dim)
-        self.adapter1 = Adapter(in_channels=64*4, adapter_dim=adapter_dim, edge_dim=edge_dim)
-
+        
+        # Post-aggregation adapter
+        self.post_adapter1 = Adapter(in_channels=64*4, 
+                                   adapter_dim=adapter_dim, 
+                                   edge_dim=edge_dim)
+        
         # ---------------------
         # 第 2 层 GAT
         # ---------------------
+        # Pre-aggregation adapter
+        self.pre_adapter2 = Adapter(in_channels=64*4, 
+                                  adapter_dim=adapter_dim, 
+                                  edge_dim=edge_dim)
+        
         self.conv2 = GATWithEdgeChannelAttention(
             in_channels=64 * 4,
             out_channels=32,
@@ -141,12 +152,20 @@ class AdapterTemporalGNN(nn.Module):
             edge_dim=edge_dim,
         )
         self.bn2 = nn.BatchNorm1d(32 * 4)
-        # Adapter
-        self.adapter2 = Adapter(in_channels=32 * 4, adapter_dim=adapter_dim, edge_dim=edge_dim)
-
+        
+        # Post-aggregation adapter
+        self.post_adapter2 = Adapter(in_channels=32*4, 
+                                   adapter_dim=adapter_dim, 
+                                   edge_dim=edge_dim)
+        
         # ---------------------
         # 第 3 层 GAT
         # ---------------------
+        # Pre-aggregation adapter
+        self.pre_adapter3 = Adapter(in_channels=32*4, 
+                                  adapter_dim=adapter_dim, 
+                                  edge_dim=edge_dim)
+        
         self.conv3 = GATWithEdgeChannelAttention(
             in_channels=32 * 4,
             out_channels=node_out_channels,
@@ -154,53 +173,73 @@ class AdapterTemporalGNN(nn.Module):
             concat=False,
             edge_dim=edge_dim,
         )
-        # 如有需要，可在第三层后也加一个Adapter
+        
+        # Post-aggregation adapter (if needed)
         self.use_adapter3 = use_adapter3
         if use_adapter3:
-            self.adapter3 = Adapter(in_channels=node_out_channels, adapter_dim=adapter_dim, edge_dim=edge_dim)
-
-        # 可以为每层adapter再添加 gating 参数(如需要):
-        self.gating_params = nn.ParameterDict()
-        self.gating_params["gating1"] = nn.Parameter(torch.tensor(0.1))  # 初始值可自行调整
-        self.gating_params["gating2"] = nn.Parameter(torch.tensor(0.1))
+            self.post_adapter3 = Adapter(in_channels=node_out_channels, 
+                                       adapter_dim=adapter_dim, 
+                                       edge_dim=edge_dim)
+        
+        # Gating parameters for all adapters
+        self.gating_params = nn.ParameterDict({
+            "pre_gating1": nn.Parameter(torch.tensor(0.1)),
+            "post_gating1": nn.Parameter(torch.tensor(0.1)),
+            "pre_gating2": nn.Parameter(torch.tensor(0.1)),
+            "post_gating2": nn.Parameter(torch.tensor(0.1)),
+            "pre_gating3": nn.Parameter(torch.tensor(0.1))
+        })
         if use_adapter3:
-            self.gating_params["gating3"] = nn.Parameter(torch.tensor(0.1))
+            self.gating_params["post_gating3"] = nn.Parameter(torch.tensor(0.1))
 
     def forward(self, data):
         x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
-
+        
         # ---- 第1层 ----
+        # Pre-aggregation adapter
+        delta_pre1 = self.pre_adapter1(x, edge_index, edge_attr)
+        x = x + self.gating_params["pre_gating1"] * (delta_pre1 - x)
+        
+        # GNN layer
         x = self.conv1(x, edge_index, edge_attr)
         x = self.bn1(x)
         x = F.elu(x)
-        # Adapter
-        delta1 = self.adapter1(x, edge_index, edge_attr)
-        # gating
-        gating1 = self.gating_params["gating1"]
-        x = x + gating1 * (delta1 - x)  # 也可以直接 x += gating1*(delta1 - x)
-
+        
+        # Post-aggregation adapter
+        delta_post1 = self.post_adapter1(x, edge_index, edge_attr)
+        x = x + self.gating_params["post_gating1"] * (delta_post1 - x)
+        
         x = F.dropout(x, p=0.5, training=self.training)
-
+        
         # ---- 第2层 ----
+        # Pre-aggregation adapter
+        delta_pre2 = self.pre_adapter2(x, edge_index, edge_attr)
+        x = x + self.gating_params["pre_gating2"] * (delta_pre2 - x)
+        
+        # GNN layer
         x = self.conv2(x, edge_index, edge_attr)
         x = self.bn2(x)
         x = F.elu(x)
-        # Adapter
-        delta2 = self.adapter2(x, edge_index, edge_attr)
-        # gating
-        gating2 = self.gating_params["gating2"]
-        x = x + gating2 * (delta2 - x)
-
+        
+        # Post-aggregation adapter
+        delta_post2 = self.post_adapter2(x, edge_index, edge_attr)
+        x = x + self.gating_params["post_gating2"] * (delta_post2 - x)
+        
         x = F.dropout(x, p=0.5, training=self.training)
-
+        
         # ---- 第3层 ----
+        # Pre-aggregation adapter
+        delta_pre3 = self.pre_adapter3(x, edge_index, edge_attr)
+        x = x + self.gating_params["pre_gating3"] * (delta_pre3 - x)
+        
+        # GNN layer
         x = self.conv3(x, edge_index, edge_attr)
-        # 如果需要第三层也适配:
+        
+        # Post-aggregation adapter (if enabled)
         if self.use_adapter3:
-            delta3 = self.adapter3(x, edge_index, edge_attr)
-            gating3 = self.gating_params["gating3"]
-            x = x + gating3 * (delta3 - x)
-
+            delta_post3 = self.post_adapter3(x, edge_index, edge_attr)
+            x = x + self.gating_params["post_gating3"] * (delta_post3 - x)
+        
         return x
     
 class Adapter(nn.Module):

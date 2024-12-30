@@ -25,14 +25,14 @@ from torch_geometric.nn import GCNConv
 from torch_geometric.nn.models.dimenet import triplets
 from model import TemporalGNN
 from torch.nn import init
-from torch_geometric.utils import k_hop_subgraph
+from torch_geometric.utils import k_hop_subgraph,subgraph
 from tqdm import tqdm
 import heapq
 from sklearn.cluster import KMeans, DBSCAN
 import math
 import matplotlib.pyplot as plt
 import time
-
+from model import *
 
 # 全局常量和变量
 
@@ -78,6 +78,8 @@ inter_time = 0.0
 # GNN
 temporal_graph_pyg = TemporalData()
 subgraph_k_hop_cache = {}
+subgraph_pyg_cache = {}
+subgraph_vertex_map_cache = {}
 filtered_temporal_graph_pyg = TemporalData()
 # 超参数
 node_in_channels = 8
@@ -89,6 +91,109 @@ k_hop = 5
 positive_hop = 3
 edge_dim = 8
 test_result_list = []
+
+def generate_triplets(center_vertices, k_hop, t_start, t_end):
+    triplets = []
+    idx = 0
+
+    # generate filtered subgraph
+    filtered_subgraph = {}
+    vertex_connect_scores = {}
+    filtered_subgraph_tensor = {}
+    valid_vertices = set()
+    for vertex in range(num_vertex):
+        neighbor_time_edge_count = defaultdict(int)
+        total_time_edge_count = 0
+        for t, neighbors in temporal_graph[vertex].items():
+            if t_start <= t <= t_end:
+                for neighbor in neighbors:
+                    neighbor_time_edge_count[neighbor] += 1
+                    total_time_edge_count += 1
+        neighbors_list = []
+        for neighbor, count in neighbor_time_edge_count.items():
+            core_number = time_range_core_number[(t_start, t_end)].get(neighbor, 0)
+            neighbors_list.append((neighbor, count, core_number))
+        filtered_subgraph[vertex] = neighbors_list
+        vertex_core_number = time_range_core_number[(t_start, t_end)].get(vertex, 0)
+        vertex_connect_scores[vertex] = vertex_core_number * total_time_edge_count / len(neighbors_list) if len(
+            neighbors_list) != 0 else 0
+
+    # 原图编号
+    for anchor in center_vertices:
+        if idx % 100 == 0:
+            print(f"{idx}/{len(center_vertices)}")
+        idx = idx + 1
+        # 找到 k 跳邻居作为正样本
+        positive_samples, hard_negative_samples, k_hop_samples = get_samples(anchor, k_hop, t_start, t_end,
+                                                                             filtered_subgraph, vertex_connect_scores)
+        if len(positive_samples) == 0:
+            continue
+        # 提取负样本
+        easy_negative_samples = random.choices(
+            list(k_hop_samples - positive_samples - hard_negative_samples - {anchor}),
+            k=min(int(len(positive_samples) * 0.8), len(k_hop_samples - positive_samples - hard_negative_samples - {anchor})))
+        hard_negative_samples = random.choices(list(hard_negative_samples),
+                                               k=min(int(len(positive_samples) - len(easy_negative_samples)),
+                                                     len(hard_negative_samples)))
+        negative_samples = hard_negative_samples + easy_negative_samples
+
+        if len(positive_samples) == 0 or len(negative_samples) == 0:
+            continue
+
+        # 生成三元组
+        triplets.append((anchor, list(positive_samples), list(negative_samples)))
+    return triplets
+
+def get_k_hop_neighbors(center_vertex, k, t_start, t_end, filtered_temporal_graph):
+    global subgraph_k_hop_cache
+    neighbors_k_hop = set()
+    visited = set()
+    visited.add(center_vertex)
+    queue = deque([(center_vertex, 0)])  # 队列初始化 (节点, 当前跳数)
+    while queue:
+        top_vertex, depth = queue.popleft()
+        if depth > k:
+            continue
+        neighbors_k_hop.add(top_vertex)
+        for (neighbor, edge_count, neighbor_core_number) in filtered_temporal_graph[top_vertex]:
+            if neighbor not in visited:
+                queue.append((neighbor, depth + 1))
+                visited.add(neighbor)
+    return neighbors_k_hop
+
+def get_samples(center_vertex, k, t_start, t_end, filtered_temporal_graph, vertex_connect_scores):
+    global subgraph_k_hop_cache
+    k_hop_neighbors = get_k_hop_neighbors(center_vertex, k, t_start, t_end, filtered_temporal_graph)
+    subgraph_k_hop_cache[(center_vertex, (t_start, t_end))] = sorted(k_hop_neighbors)
+
+    # 同时考虑时态边和coreness
+    positive_neighbors_list = []
+    positive_neighbors = set()
+    hard_negative_neighbors = set()
+    visited = set()
+    visited.add(center_vertex)
+    queue = []  # 优先队列
+    heapq.heappush(queue, (0, center_vertex))
+    query_vertex_core_number = time_range_core_number[(t_start, t_end)].get(center_vertex, 0)
+    while queue:
+        _, top_vertex = heapq.heappop(queue)
+        v_core_number = time_range_core_number[(t_start, t_end)].get(top_vertex, 0)
+        if v_core_number >= query_vertex_core_number:
+            hard_negative_neighbors.add(top_vertex)
+        positive_neighbors_list.append(top_vertex)
+        for (neighbor, edge_count, neighbor_core_number) in filtered_temporal_graph[top_vertex]:
+            if neighbor not in visited and neighbor in k_hop_neighbors:
+                heapq.heappush(queue, (-vertex_connect_scores[neighbor], neighbor))
+                visited.add(neighbor)
+
+    while len(positive_neighbors) < len(hard_negative_neighbors) * 0.3:
+        left_vertex = positive_neighbors_list.pop(0)
+        if left_vertex != center_vertex:
+            positive_neighbors.add(left_vertex)
+    hard_negative_neighbors = hard_negative_neighbors - positive_neighbors - {center_vertex}
+
+    return positive_neighbors, hard_negative_neighbors, k_hop_neighbors
+
 
 
 
@@ -548,288 +653,6 @@ def temporal_test_GNN(distances, vertex_map, query_vertex, t_start, t_end):
     print(f"Result Number: {len(result)}")
     return temporal_density, temporal_conductance
 
-    # # test with GNN using score
-    # visited = set()
-    # visited.add(query_vertex)
-    # result = set()
-    # queue = []
-    # heapq.heappush(queue, (0, query_vertex))
-    # best_score = 0
-    # total_distance = 0
-    # # 归一化距离
-    # mask = (distances != 0)
-    # temp_distances = distances[mask]
-    # distances = (distances - temp_distances.min()) / (distances.max() - temp_distances.min() + 1e-6)
-    # avg_distance = distances.mean().item()
-    #
-    # while queue:
-    #     distance, top_vertex = heapq.heappop(queue)
-    #     result.add(top_vertex)
-    #     total_distance += distance
-    #     score = (1 / (len(result) ** 0.8)) * (avg_distance * len(result) - total_distance)
-    #     # if len(result) > 200:
-    #     #     break
-    #     # if len(result) > 5 and score < best_score:
-    #     #     result.pop()
-    #     #     break
-    #     # elif score > best_score:
-    #     #     best_score = score
-    #     for t, neighbors in temporal_graph[top_vertex].items():
-    #         if t_start <= t <= t_end:
-    #             for neighbor in neighbors:
-    #                 if neighbor not in visited:
-    #                     visited.add(neighbor)
-    #                     if vertex_map[neighbor] != -1:
-    #                         heapq.heappush(queue, (distances[vertex_map[neighbor]].item(), neighbor))
-    # if len(result) == 0:
-    #     return 0, 0
-    # temporal_density = compute_density(result, t_start, t_end)
-    # # print(len(result))
-    #
-    # temporal_conductance = compute_conductance(result, t_start, t_end)
-    # print(f"Result Number: {len(result)}")
-    # return temporal_density, temporal_conductance
-
-    # # test with positive samples
-    # visited = set()
-    # visited.add(query_vertex)
-    # result = set()
-    # queue = []
-    # heapq.heappush(queue, (0, query_vertex))
-    # query_core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
-    # best_conductance = 1
-    # best_result = set()
-    # tolerance_limit = 15
-    # tolerance_cnt = 0
-    # vertex_connect = defaultdict(float)
-    # for vertex in range(num_vertex):
-    #     if vertex_map[vertex] == -1 or vertex == query_vertex:
-    #         continue
-    #     edges_cnt = 0
-    #     neighbor_set = set()
-    #     neighbor_core_number = time_range_core_number[(t_start, t_end)].get(vertex, 0)
-    #     for t, neighbors in temporal_graph[vertex].items():
-    #         if t_start <= t <= t_end:
-    #             edges_cnt += len(neighbors)
-    #             neighbor_set.update(neighbors)
-    #     vertex_connect[vertex] = edges_cnt / len(neighbor_set) * neighbor_core_number
-    #
-    # while queue:
-    #     score, top_vertex = heapq.heappop(queue)
-    #     if top_vertex in result:
-    #         continue
-    #     # if len(result) > 100:
-    #     #     break
-    #     result.add(top_vertex)
-    #     if len(result) > k_core_num * 0.4:
-    #         break
-    #     if len(result) > 10:
-    #         temp_conductance = compute_conductance(result, t_start, t_end)
-    #         if temp_conductance < best_conductance:
-    #             best_conductance = temp_conductance
-    #             best_result = result.copy()
-    #             tolerance_cnt = 0
-    #         else:
-    #             tolerance_cnt += 1
-    #         if tolerance_cnt > tolerance_limit:
-    #             break
-    #         print(f"Conductance: {temp_conductance}")
-    #     for t, neighbors in temporal_graph[top_vertex].items():
-    #         if t_start <= t <= t_end:
-    #             for neighbor in neighbors:
-    #                 if vertex_map[neighbor] != -1 and neighbor not in visited:
-    #                     score_connect = vertex_connect[neighbor]
-    #                     heapq.heappush(queue, (-score_connect, neighbor))
-    #                     visited.add(neighbor)
-    # result = best_result
-    # temporal_density = compute_density(result, t_start, t_end)
-    # # print(len(result))
-    #
-    # temporal_conductance = compute_conductance(result, t_start, t_end)
-    # print(f"GNN Result Number: {len(result)}")
-    # return temporal_density, temporal_conductance
-
-    # # test with positive samples
-    # visited = set()
-    # visited.add(query_vertex)
-    # result = set()
-    # queue = []
-    # heapq.heappush(queue, (0, query_vertex))
-    # query_core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
-    # vertex_connect = defaultdict(int)
-    #
-    # while queue:
-    #     score, top_vertex = heapq.heappop(queue)
-    #     if top_vertex in result:
-    #         continue
-    #     # if len(result) > 0 and -score < query_core_number + 2:
-    #     #     break
-    #     if len(result) > k_core_num * 0.5:
-    #         break
-    #     result.add(top_vertex)
-    #     neighbors_set = set()
-    #     for t, neighbors in temporal_graph[top_vertex].items():
-    #         if t_start <= t <= t_end:
-    #             for neighbor in neighbors:
-    #                 if vertex_map[neighbor] != -1 and neighbor not in result:
-    #                     vertex_connect[neighbor] += 1
-    #                     neighbors_set.add(neighbor)
-    #     for neighbor in neighbors_set:
-    #         neighbor_core_number = time_range_core_number[(t_start, t_end)].get(neighbor, 0)
-    #         num_connect = vertex_connect[neighbor]
-    #         heapq.heappush(queue, (-(num_connect + neighbor_core_number), neighbor))
-    #         visited.add(neighbor)
-    #
-    # temporal_density = compute_density(result, t_start, t_end)
-    # # print(len(result))
-    #
-    # temporal_conductance = compute_conductance(result, t_start, t_end)
-    # print(f"GNN Result Number: {len(result)}")
-    # return temporal_density, temporal_conductance
-
-    # visited = set()
-    # visited.add(query_vertex)
-    # result = set()
-    # queue = []
-    # heapq.heappush(queue, (0, query_vertex))
-    # while queue:
-    #     distance, top_vertex = heapq.heappop(queue)
-    #     if len(result) > 0.4 * k_core_num or len(result) > 300:
-    #         break
-    #     result.add(top_vertex)
-    #     for t, neighbors in temporal_graph[top_vertex].items():
-    #         if t_start <= t <= t_end:
-    #             for neighbor in neighbors:
-    #                 if neighbor not in visited:
-    #                     visited.add(neighbor)
-    #                     if vertex_map[neighbor] != -1:
-    #                         heapq.heappush(queue, (distances[vertex_map[neighbor]].item(), neighbor))
-    #
-    # temporal_density = compute_density(result, t_start, t_end)
-    # print(len(result))
-
-    # temporal_conductance = compute_conductance(result, t_start, t_end)
-    # print(f"Result Number: {len(result)}")
-    # return temporal_density, temporal_conductance
-
-    # # test with GNN using dbscan
-    # visited = set()
-    # visited.add(query_vertex)
-    # result = set()
-    # queue = []
-    # heapq.heappush(queue, (0, query_vertex))
-    #
-    # distances = distances.detach().numpy()
-    # plt.figure(figsize=(8, 6))
-    # plt.hist(distances, bins=30, edgecolor='black', density=True)
-    # plt.xlabel('Value')
-    # plt.ylabel('Density')
-    # plt.title('Distribution of Values in N x 1 Tensor')
-    # plt.show()
-    #
-    # return 0, 0
-
-    # # test with GNN using k-means
-    # visited = set()
-    # visited.add(query_vertex)
-    # result = set()
-    # queue = []
-    # heapq.heappush(queue, (0, query_vertex))
-    # # k-means
-    # distances = distances.to('cpu')
-    # # 归一化distance
-    # distances = (distances - distances.min()) / (distances.max() - distances.min() + 1e-6)
-    # distances = distances.unsqueeze(1)
-    # distances_np = distances.detach().numpy()
-    # known_center = np.array([[0]])
-    # unknown_center = np.array([[distances_np.mean()]])
-    # initial_centroids = np.vstack([known_center, unknown_center])  # 组合成 2x1 的初始中心
-    # kmeans = KMeans(n_clusters=2, init=initial_centroids, n_init=1, random_state=42)
-    # kmeans.fit(distances_np)
-    # labels = kmeans.labels_  # 每个数据点的类别标签
-    # category_0_data = distances[torch.tensor(labels) == 0]  # 筛选类别 0 的数据点
-    # max_value_category_0 = category_0_data.max()
-    #
-    # best_conductance = 1
-    # tolerance_limit = 30
-    # tolerance_cnt = 0
-    # best_result = set()
-    # while queue:
-    #     distance, top_vertex = heapq.heappop(queue)
-    #     result.add(top_vertex)
-    #     if len(result) > 10:
-    #         temp_density = compute_density(result, t_start, t_end)
-    #         temp_conductance = compute_conductance(result, t_start, t_end)
-    #         print(f"Distance: {distance:.4f}, Density: {temp_density:.4f}, Conductance: {temp_conductance:.4f}")
-    #         if temp_conductance < best_conductance:
-    #             best_conductance = temp_conductance
-    #             best_result = result.copy()
-    #             tolerance_cnt = 0
-    #         else:
-    #             tolerance_cnt += 1
-    #         if tolerance_cnt > tolerance_limit or temp_density < k_core_density or len(result) > k_core_num * 0.4:
-    #             break
-    #     for t, neighbors in temporal_graph[top_vertex].items():
-    #         if t_start <= t <= t_end:
-    #             for neighbor in neighbors:
-    #                 if neighbor not in visited:
-    #                     visited.add(neighbor)
-    #                     if vertex_map[neighbor] != -1:
-    #                         heapq.heappush(queue, (distances[vertex_map[neighbor]].item(), neighbor))
-    #
-    # result = best_result
-    # temporal_density = compute_density(result, t_start, t_end)
-    # # print(len(result))
-
-    # temporal_conductance = compute_conductance(result, t_start, t_end)
-    # print(f"Result Number: {len(result)}")
-    # return temporal_density, temporal_conductance
-
-    # # test with GNN using conductance
-    # visited = set()
-    # visited.add(query_vertex)
-    # result = set()
-    # queue = []
-    # heapq.heappush(queue, (0, query_vertex))
-    # # 归一化distance
-    # mask = distances != 0
-    # # distances = (distances - distances[mask].min()) / (distances[mask].max() - distances[mask].min() + 1e-6)
-    # distances = torch.where(mask, (distances - distances[mask].min()) / (distances[mask].max() - distances[mask].min() + 1e-6), 0)
-    #
-    # best_conductance = 1
-    # tolerance_limit = 30
-    # tolerance_cnt = 0
-    # best_result = set()
-    # while queue:
-    #     distance, top_vertex = heapq.heappop(queue)
-    #     result.add(top_vertex)
-    #     if len(result) > 10:
-    #         temp_density = compute_density(result, t_start, t_end)
-    #         temp_conductance = compute_conductance(result, t_start, t_end)
-    #         print(f"Distance: {distance:.4f}, Density: {temp_density:.4f}, Conductance: {temp_conductance:.4f}")
-    #         if temp_conductance < best_conductance:
-    #             best_conductance = temp_conductance
-    #             best_result = result.copy()
-    #             tolerance_cnt = 0
-    #         else:
-    #             tolerance_cnt += 1
-    #         if tolerance_cnt > tolerance_limit or temp_density < k_core_density or len(result) > k_core_num * 0.4:
-    #             break
-    #     for t, neighbors in temporal_graph[top_vertex].items():
-    #         if t_start <= t <= t_end:
-    #             for neighbor in neighbors:
-    #                 if neighbor not in visited:
-    #                     visited.add(neighbor)
-    #                     if vertex_map[neighbor] != -1:
-    #                         heapq.heappush(queue, (distances[vertex_map[neighbor]].item(), neighbor))
-    #
-    # result = best_result
-    # temporal_density = compute_density(result, t_start, t_end)
-    # # print(len(result))
-    #
-    # temporal_conductance = compute_conductance(result, t_start, t_end)
-    # print(f"Result Number: {len(result)}")
-    # return temporal_density, temporal_conductance
 
 def temporal_test_GNN_query_time(distances, vertex_map, query_vertex, t_start, t_end):
     # test with GNN using threshold
@@ -872,12 +695,101 @@ def temporal_test_GNN_query_time(distances, vertex_map, query_vertex, t_start, t
     print(f"Result Number: {len(result)}")
     return temporal_density, temporal_conductance,result
 
+class MultiSampleQuadrupletDataset(Dataset):
+    def __init__(self, quadruplets):
+        self.quadruplets = quadruplets
+
+    def __len__(self):
+        return len(self.quadruplets)
+
+    def __getitem__(self, idx):
+        anchor, positives, negatives, time_range = self.quadruplets[idx]
+        return anchor, list(positives), list(negatives), time_range
+
+def quadruplet_collate_fn(batch):
+    anchors = torch.tensor([item[0] for item in batch], dtype=torch.long)  # 锚点
+    positives = [item[1] for item in batch]  # 正样本列表
+    negatives = [item[2] for item in batch]  # 负样本列表
+    time_ranges = [item[3] for item in batch]  # 时间范围
+    return anchors, positives, negatives, time_ranges
+
+def extract_subgraph_for_anchor(anchor, t_start, t_end,feature_dim):
+    """
+    为单个 anchor 提取子图。
+
+    Args:
+        anchor: 单个 anchor 节点
+        t_start: 时间窗口起始时间
+        t_end: 时间窗口结束时间
+        feature_dim: 节点特征维度
+        temporal_graph_pyg: 原始时间图
+        subgraph_k_hop_cache: k-hop 邻居缓存
+        num_vertex: 总节点数
+        init_vertex_features: 初始化节点特征的函数
+        edge_dim: 边的维度
+        device: 设备
+
+    Returns:
+        subgraph_pyg: 子图 Data 对象
+        vertex_map: 顶点映射
+    """
+    neighbors = subgraph_k_hop_cache[(anchor, (t_start, t_end))]
+    neighbors = torch.tensor(sorted(neighbors), device=device)
+    sub_edge_index, sub_edge_attr = subgraph(subset=neighbors, edge_index=temporal_graph_pyg.edge_index, edge_attr=temporal_graph_pyg.edge_attr, relabel_nodes=False)
+    time_mask = (sub_edge_attr >= t_start) & (sub_edge_attr <= t_end)
+    valid_edges = time_mask.any(dim=1)
+    sub_edge_attr[~time_mask] = -1
+    sub_edge_attr = sub_edge_attr[valid_edges]
+    sub_edge_index = sub_edge_index[:, valid_edges]
+
+
+    # 构建 vertex_map
+    vertex_map = torch.full((num_vertex,), -1, dtype=torch.long, device=device)
+    vertex_map[neighbors] = torch.arange(len(neighbors), device=device)
+    
+    # 生成边属性-傅立叶变换
+    mask = (sub_edge_attr != -1)
+    indices = mask.nonzero(as_tuple=True)
+    origin_edge_attr = torch.zeros(sub_edge_attr.shape[0], t_end - t_start + 1, device=device)
+    origin_edge_attr[indices[0], (sub_edge_attr[indices] - t_start).long()] = 1
+    target_dim = edge_dim
+    origin_edge_attr = F.adaptive_avg_pool1d(origin_edge_attr.unsqueeze(1), target_dim)
+    sub_edge_attr = origin_edge_attr.squeeze(1)
+    sub_edge_attr = torch.abs(torch.fft.fft(sub_edge_attr, dim=1))
+    
+    # 构建子图 Data 对象
+    subgraph_pyg = Data(
+        x=init_vertex_features(t_start, t_end, neighbors, feature_dim, -1),
+        edge_index=sub_edge_index,
+        edge_attr=sub_edge_attr,
+        device=device
+    )
+
+    return subgraph_pyg, vertex_map
+
 def query_test():
     global k_core_conductance, k_core_density
-    model = TemporalGNN(node_in_channels, node_out_channels, edge_dim=edge_dim).to(device)
-    # model.load_state_dict(torch.load("model_L1_L2.pth"))
-    model.load_state_dict(torch.load("model_L1_finetune.pth"),strict=False)
-    # model.load_state_dict(torch.load("best_model.pth"))
+    
+    # 初始化模型并加载预训练权重
+    model = AdapterTemporalGNN(
+        node_in_channels=node_in_channels,
+        node_out_channels=node_out_channels,
+        edge_dim=edge_dim,
+        adapter_dim=16,
+        use_adapter3=False
+    ).to(device)
+    model.load_state_dict(torch.load("model_L1.pth"), strict=False)
+    
+    # 冻结非adapter参数
+    for name, param in model.named_parameters():
+        if 'adapter' not in name and 'gating_params' not in name:
+            param.requires_grad = False
+    
+    # 只优化adapter参数
+    adapter_params = [p for n, p in model.named_parameters() if 'adapter' in n or 'gating_params' in n]
+    optimizer = torch.optim.Adam(adapter_params, lr=0.001)
+    scaler = GradScaler()  # 混合精度训练
+    
     test_time_range_list = []
     while len(test_time_range_list) < 10:
         t_layer = random.randint(1, len(time_range_layers) - 2)
@@ -885,65 +797,130 @@ def query_test():
         t_start, t_end = time_range_layers[t_layer][t_idx][0], time_range_layers[t_layer][t_idx][1]
         if (t_start, t_end) not in test_time_range_list:
             test_time_range_list.append((t_start, t_end))
+    
     temporal_density_ratio = 0
     temporal_conductance_ratio = 0
     valid_cnt = 0
     total_time = 0
     result_len = 0
+    
     for t_start, t_end in test_time_range_list:
         print(f"Test time range: [{t_start}, {t_end}]")
         query_vertex_list = set()
         while len(query_vertex_list) < 10:
-            query_vertex = random.choice
+            query_vertex = random.choice(range(num_vertex))
             core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
             while core_number < 5:
                 query_vertex = random.choice(range(num_vertex))
                 core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
             query_vertex_list.add(query_vertex)
+            
         for query_vertex in query_vertex_list:
             print(valid_cnt)
             start_time = time.time()
-            feature_dim = node_in_channels
-            subgraph, vertex_map, neighbors_k_hop = extract_subgraph(query_vertex, t_start, t_end, k_hop, feature_dim)
-            embeddings = model(subgraph)
-            query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)
-            neighbors_embeddings = embeddings[vertex_map[neighbors_k_hop]]
-            # 计算距离
-            distances = F.pairwise_distance(query_vertex_embedding, neighbors_embeddings)
+            
+            # 为查询节点生成训练数据
+            center_vertices = {query_vertex}  # 只使用查询节点作为中心
+            triplets = generate_triplets(center_vertices, k_hop, t_start, t_end)
+            quadruplet = [(t[0], t[1], t[2], (t_start, t_end)) for t in triplets]
+            
+            # 创建数据加载器
+            query_dataset = MultiSampleQuadrupletDataset(quadruplet)
+            query_loader = DataLoader(query_dataset, batch_size=batch_size, shuffle=True,
+                                   collate_fn=quadruplet_collate_fn)
+            # 查询特定的微调
+            model.train()
+            for _ in range(5):  # 微调步数
+                for batch in query_loader:
+                    anchors, positives, negatives, time_ranges = batch
+                    anchors = torch.tensor(anchors, device=device).clone()
+                    positives = [torch.tensor(pos, device=device) for pos in positives]
+                    negatives = [torch.tensor(neg, device=device) for neg in negatives]
 
-            # test query time
-            GNN_temporal_density, GNN_temporal_conductance,result = temporal_test_GNN_query_time(distances, vertex_map, query_vertex, t_start, t_end)
-            temporal_density_ratio+=GNN_temporal_density
-            temporal_conductance_ratio+=GNN_temporal_conductance
-            result_len+=len(result)
-
-            # test quality
-            # core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
-            # print(f"k={core_number}")
-            # k_core_temporal_density, k_core_temporal_conductance = temporal_test_k_core(query_vertex, t_start, t_end)
-            # print(f"Temporal density of k-core: {k_core_temporal_density}")
-            # print(f"Temporal conductance of k-core: {k_core_temporal_conductance}")
-            # k_core_conductance = k_core_temporal_conductance
-            # k_core_density = k_core_temporal_density
-            # GNN_temporal_density, GNN_temporal_conductance = temporal_test_GNN(distances, vertex_map, query_vertex, t_start, t_end)
-            # # GNN_temporal_density, GNN_temporal_conductance = temporal_test_GNN_center(neighbors_embeddings, distances, vertex_map, query_vertex, t_start, t_end)
-            # print(f"Temporal density of GNN: {GNN_temporal_density}")
-            # print(f"Temporal conductance of GNN: {GNN_temporal_conductance}")
-            # print(GNN_temporal_density / k_core_temporal_density)
-            # print(GNN_temporal_conductance / k_core_temporal_conductance)
-            # # if GNN_temporal_conductance > k_core_conductance * 0.8:
-            # #     continue
-            # temporal_density_ratio += GNN_temporal_density / k_core_temporal_density
-            # temporal_conductance_ratio += GNN_temporal_conductance / k_core_temporal_conductance
-
+                    optimizer.zero_grad()
+                    
+                    # 提取子图并获取嵌入
+                    subgraphs = []
+                    vertex_maps = []
+                    for anchor, time_range in zip(anchors, time_ranges):
+                        subgraph_pyg, vertex_map = extract_subgraph_for_anchor(
+                            anchor.item(), time_range[0], time_range[1],8)
+                        if subgraph_pyg is None:
+                            continue # 跳过没有子图的样本
+                        subgraphs.append(subgraph_pyg)
+                        vertex_maps.append(vertex_map)
+                        
+                    batched_subgraphs = Batch.from_data_list(subgraphs).to(device)
+                    with autocast():
+                        embeddings = model(batched_subgraphs)
+                    batch_indices = batched_subgraphs.batch
+                    
+                    # 计算损失
+                    batch_loss = 0.0
+                    for i, (anchor, pos_samples, neg_samples, vertex_map, time_range) in enumerate(
+                            zip(anchors, positives, negatives, vertex_maps, time_ranges)):
+                        
+                        node_indices = (batch_indices == i).nonzero(as_tuple=True)[0]
+                        anchor_idx = node_indices[vertex_map[anchor.long()]]
+                        pos_samples = pos_samples.to(device=vertex_map.device).long()
+                        neg_samples = neg_samples.to(device=vertex_map.device).long()
+                        pos_mapped_indices = vertex_map[pos_samples]
+                        neg_mapped_indices = vertex_map[neg_samples]
+                        pos_indices = node_indices[pos_mapped_indices]
+                        neg_indices = node_indices[neg_mapped_indices]
+                        
+                        if len(pos_indices) == 0 or len(neg_indices) == 0:
+                            continue
+                            
+                        anchor_emb = embeddings[anchor_idx]
+                        positive_emb = embeddings[pos_indices]
+                        negative_emb = embeddings[neg_indices]
+                        
+                        # 组合损失：三元组损失 + 连接损失
+                        loss = margin_triplet_loss(anchor_emb, positive_emb, negative_emb)
+                        # loss += alpha * link_loss(vertex_map, subgraph_emb, time_range[0], time_range[1])
+                        batch_loss += loss
+                    
+                    if len(vertex_maps) > 0:
+                        batch_loss = batch_loss / len(vertex_maps)
+                        
+                    # 更新参数
+                    scaler.scale(batch_loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+            
+            # 评估阶段
+            model.eval()
+            with torch.no_grad():
+                feature_dim = node_in_channels
+                subgraph, vertex_map, neighbors_k_hop = extract_subgraph(
+                    query_vertex, t_start, t_end, k_hop, feature_dim)
+                
+                embeddings = model(subgraph)
+                query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)
+                neighbors_embeddings = embeddings[vertex_map[neighbors_k_hop]]
+                distances = F.pairwise_distance(query_vertex_embedding, neighbors_embeddings)
+                
+                GNN_temporal_density, GNN_temporal_conductance, result = temporal_test_GNN_query_time(
+                    distances, vertex_map, query_vertex, t_start, t_end)
+                
+                temporal_density_ratio += GNN_temporal_density
+                temporal_conductance_ratio += GNN_temporal_conductance
+                result_len += len(result)
+            
             end_time = time.time()
             total_time += end_time - start_time
             valid_cnt += 1
+            
+            # 清理缓存
+            torch.cuda.empty_cache()
+    
+    # 打印结果
     print(f"Valid test number: {valid_cnt}")
     print(f"Average temporal density ratio: {temporal_density_ratio / valid_cnt}")
     print(f"Average temporal conductance ratio: {temporal_conductance_ratio / valid_cnt}")
     print(f"Average time: {total_time / valid_cnt}s")
-    print(f"Average length: {result_len / valid_cnt} ")
+    print(f"Average length: {result_len / valid_cnt}")
 
 # 主函数
 def main():
