@@ -161,10 +161,6 @@ class AdapterTemporalGNN(nn.Module):
         # ---------------------
         # 第 3 层 GAT
         # ---------------------
-        # Pre-aggregation adapter
-        self.pre_adapter3 = Adapter(in_channels=32*4, 
-                                  adapter_dim=adapter_dim, 
-                                  edge_dim=edge_dim)
         
         self.conv3 = GATWithEdgeChannelAttention(
             in_channels=32 * 4,
@@ -174,23 +170,13 @@ class AdapterTemporalGNN(nn.Module):
             edge_dim=edge_dim,
         )
         
-        # Post-aggregation adapter (if needed)
-        self.use_adapter3 = use_adapter3
-        if use_adapter3:
-            self.post_adapter3 = Adapter(in_channels=node_out_channels, 
-                                       adapter_dim=adapter_dim, 
-                                       edge_dim=edge_dim)
-        
         # Gating parameters for all adapters
         self.gating_params = nn.ParameterDict({
             "pre_gating1": nn.Parameter(torch.tensor(0.1)),
             "post_gating1": nn.Parameter(torch.tensor(0.1)),
             "pre_gating2": nn.Parameter(torch.tensor(0.1)),
             "post_gating2": nn.Parameter(torch.tensor(0.1)),
-            "pre_gating3": nn.Parameter(torch.tensor(0.1))
         })
-        if use_adapter3:
-            self.gating_params["post_gating3"] = nn.Parameter(torch.tensor(0.1))
 
     def forward(self, data):
         x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
@@ -228,58 +214,50 @@ class AdapterTemporalGNN(nn.Module):
         x = F.dropout(x, p=0.5, training=self.training)
         
         # ---- 第3层 ----
-        # Pre-aggregation adapter
-        delta_pre3 = self.pre_adapter3(x, edge_index, edge_attr)
-        x = x + self.gating_params["pre_gating3"] * (delta_pre3 - x)
-        
         # GNN layer
         x = self.conv3(x, edge_index, edge_attr)
-        
-        # Post-aggregation adapter (if enabled)
-        if self.use_adapter3:
-            delta_post3 = self.post_adapter3(x, edge_index, edge_attr)
-            x = x + self.gating_params["post_gating3"] * (delta_post3 - x)
         
         return x
     
 class Adapter(nn.Module):
     """
-    对输入做轻量级映射，结合时间信息，并通过残差方式加回
+    对输入做轻量级映射，结合时间信息(傅里叶变换后的时间戳)，并通过残差方式加回
     """
     def __init__(self, in_channels, adapter_dim, edge_dim):
         super(Adapter, self).__init__()
-        
-        #
+
         self.down = nn.Linear(in_channels, adapter_dim)
         self.activation = nn.ReLU()
         self.up = nn.Linear(adapter_dim, in_channels)
-        
-        # 时间信息处理
+
+        # 时间信息处理 (针对傅里叶变换后的特征)
         self.time_proj = nn.Sequential(
             nn.Linear(edge_dim, adapter_dim),
             nn.ReLU()
         )
-        
-        # 特征融合层
+
+        # 注意：由于是频域信息，可以考虑使用不同的融合策略
+        # 方案 1: 仍然使用简单的线性融合层
         self.fusion = nn.Linear(adapter_dim * 2, adapter_dim)
-        
+        # 方案 2: 使用更复杂的融合策略，例如注意力机制 (下面提供示例代码)
+        # self.fusion = TimeAttentionFusion(adapter_dim)  # 下面提供了该模块的实现代码
+
     def forward(self, x, edge_index, edge_attr):
         # 1. 处理节点特征
         node_feat = self.down(x)
         node_feat = self.activation(node_feat)
 
-        # 2. 处理时间特征
+        # 2. 处理时间特征 (已经是频域特征)
         time_feat = self.time_proj(edge_attr)  # [num_edges, adapter_dim]
-        
+
         # 3. 聚合时间信息到节点
-        # 使用 scatter_mean 将边的时间特征聚合到对应的节点
         node_time_feat = scatter_mean(
             time_feat,
             edge_index[0],  # 使用源节点进行聚合
             dim=0,
             dim_size=x.size(0)
         )  # [num_nodes, adapter_dim]
-        
+
         # 4. 融合节点特征和时间特征
         combined = torch.cat([node_feat, node_time_feat], dim=-1)
         fused = self.fusion(combined)
@@ -288,7 +266,31 @@ class Adapter(nn.Module):
         # 5. 最终映射和残差连接
         out = self.up(fused)
         return x + out
-    
+
+# 方案 2 的补充：使用注意力机制进行融合 (可选)
+class TimeAttentionFusion(nn.Module):
+    def __init__(self, adapter_dim):
+        super(TimeAttentionFusion, self).__init__()
+        self.query = nn.Linear(adapter_dim, adapter_dim)
+        self.key = nn.Linear(adapter_dim, adapter_dim)
+        self.value = nn.Linear(adapter_dim, adapter_dim)
+        self.softmax = nn.Softmax(dim=-1)
+        self.out = nn.Linear(adapter_dim, adapter_dim)
+
+    def forward(self, combined):
+        node_feat = combined[:, :combined.shape[1] // 2]
+        node_time_feat = combined[:, combined.shape[1] // 2:]
+
+        q = self.query(node_feat)
+        k = self.key(node_time_feat)
+        v = self.value(node_time_feat)
+
+        attn_weights = self.softmax(q @ k.transpose(-2, -1) / (k.size(-1) ** 0.5))  # Scaled dot-product attention
+        attn_output = attn_weights @ v
+        
+        fused = self.out(attn_output)
+        return fused
+      
 # 时态信息-特征拼接-再计算注意力系数
 class GATWithEdgeChannelAttention(MessagePassing):
     def __init__(

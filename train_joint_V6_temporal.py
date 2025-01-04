@@ -21,6 +21,7 @@ import heapq
 from model import *
 import time
 import numpy as np
+from MLP_search import *
 
 
 # 全局常量和变量
@@ -1006,6 +1007,10 @@ def train_and_evaluation():
         use_adapter3=False 
     ).to(device)
 
+    for name, param in model.named_parameters():
+        if 'adapter' in name and 'gating_params' in name:
+            param.requires_grad = False
+
     ######################
     # 2) 生成训练/验证/测试数据
     ######################
@@ -1113,7 +1118,7 @@ def train_and_evaluation():
             subgraphs = []
             vertex_maps = []
             for anchor, time_range in zip(anchors, time_ranges):
-                subgraph_pyg, vertex_map = extract_subgraph_for_single_anchor(anchor.item(), time_range[0], time_range[1],8)
+                subgraph_pyg, vertex_map = extract_subgraph_for_anchor(anchor.item(), time_range[0], time_range[1])
                 if len(vertex_map) == 0:
                     continue
                 subgraphs.append(subgraph_pyg)
@@ -1251,8 +1256,7 @@ def train_and_evaluation():
                     subgraphs = []
                     vertex_maps = []
                     for anchor, time_range in zip(anchors, time_ranges):
-                        subgraph_pyg, vertex_map = extract_subgraph_for_anchor(
-                            anchor.item(), 756, 791)
+                        subgraph_pyg, vertex_map = extract_subgraph_for_time_range(center_vertices, t_start, t_end, node_in_channels)
                         if subgraph_pyg is None:
                             continue # 跳过没有子图的样本
                         subgraphs.append(subgraph_pyg)

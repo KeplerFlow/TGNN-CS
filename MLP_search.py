@@ -914,6 +914,176 @@ def query_test():
         print(f"Total query time: {total_query_time} s")
     # print(f"Average prediction time: {total_prediction_time / valid_query_num:.4f} s")
 
+def query_for_single(query_vertex, query_time_range_start, query_time_range_end):
+    global temporal_graph_test, inter_time
+    print("Query test...")
+
+    total_query_time = 0.0
+    total_prediction_time = 0.0
+    valid_query_num = 0
+    total_result_num = 0.0
+   
+    query_result = []
+
+    # temporal_graph_test = defaultdict(list)
+    #
+    # for v in range(num_vertex):
+    #     neighbor_set = set()
+    #     for t, neighbors in temporal_graph[v].items():
+    #         if query_time_range_start <= t <= query_time_range_end:
+    #             neighbor_set.update(neighbors)
+    #     temporal_graph_test[v] = list(neighbor_set)
+
+    # print(query_vertex, query_time_range_start, query_time_range_end)
+
+    # query_vertex = 15589
+    # query_time_range_start = 1563
+    # query_time_range_end = 1572
+    #
+    # print(query_vertex)
+    # print(query_time_range_start)
+    # print(query_time_range_end)
+
+    # t1 = time.time()
+    query_vertex_core_number = model_out_put_for_any_range_vertex_set([query_vertex], query_time_range_start, query_time_range_end)
+    # t2 = time.time()
+    # print("query_vertex_core_number:", query_vertex_core_number)
+    # print("query_vertex_core_number.shape:", query_vertex_core_number.shape)
+    # print("query_vertex_core_number.device:", query_vertex_core_number.device)
+
+    if query_vertex_core_number.item() < 10:
+        print("The query vertex is not a core vertex.")
+        # print(query_vertex_core_number)
+        # print(t2 - t1)
+        return 
+    valid_query_num = valid_query_num + 1
+    print(f"Query Vertex: {query_vertex}, Core Number: {query_vertex_core_number}")
+    print(f"Query: {query_time_range_start} - {query_time_range_end}")
+
+    # precompute
+    vertex_visited = np.zeros(num_vertex, dtype=bool)
+    vertex_queue = deque()
+    # vertex_queue.append(query_vertex)
+    vertex_visited[query_vertex] = True
+    candidate_vertices = [query_vertex]
+
+    # # search the vertices one by one using the tree
+    # node = tree_query(query_time_range_start, query_time_range_end)
+    # start_time = time.time()
+    # vertex_queue.append(query_vertex)
+    # while len(vertex_queue) > 0:
+    #     temp_vertex = vertex_queue.popleft()
+    #     temp_vertex_core_number = model_out_put_for_any_range_single_vertex(temp_vertex, query_time_range_start, query_time_range_end)
+    #     vertex_visited[temp_vertex] = True
+    #     if temp_vertex_core_number >= query_vertex_core_number:
+    #         query_result.append(temp_vertex)
+    #         for neighbor in temporal_graph_test[temp_vertex]:
+    #             if not vertex_visited[neighbor]:
+    #                 vertex_queue.append(neighbor)
+    #                 vertex_visited[neighbor] = True
+    #         # for t in node.vertex_timestamp[temp_vertex]:
+    #         #     if query_time_range_start <= t <= query_time_range_end:
+    #         #         for neighbor in temporal_graph[temp_vertex][t]:
+    #         #             if neighbor not in vertex_visited:
+    #         #                 vertex_queue.append(neighbor)
+    #         #                 vertex_visited[neighbor] = True
+    # end_time = time.time()
+    # total_query_time += end_time - start_time
+    # print(f"Search time: {end_time - start_time:.4f} s")
+    # print(f"Result number: {len(query_result)}")
+    # print(f"Query result: {query_result}")
+
+    # 预处理：读取存在树节点中的邻居信息
+    start_time = time.time()
+    current_node = tree_query(query_time_range_start, query_time_range_end)
+    vertex_queue.append((query_vertex, 0))
+    hop_num = 6
+    # covered_nodes = []
+    # for child_node in node.children:
+    #     if child_node.time_start >= query_time_range_start and child_node.time_end <= query_time_range_end:
+    #         covered_nodes.append(child_node)
+    # covered_range = (-1, -1)
+    # if len(covered_nodes) > 0:
+    #     covered_range = (covered_nodes[0].time_start, covered_nodes[-1].time_end)
+    while len(vertex_queue) > 0:
+        (temp_vertex, temp_hop) = vertex_queue.popleft()
+        temp_vertex = int(temp_vertex)
+        if temp_hop > hop_num:
+            continue
+        vertex_visited[temp_vertex] = True
+
+        candidate_vertices.append(temp_vertex)
+        # 处理未访问的邻居节点
+        # neighbor_set = set()
+        for t, neighbors in temporal_graph[temp_vertex].items():
+            if query_time_range_start <= t <= query_time_range_end:
+                # neighbor_set.update(neighbors)
+                for neighbor in neighbors:
+                    neighbor_core_number = current_node.vertex_degree.get(neighbor, 0)
+                    if not vertex_visited[neighbor] and neighbor_core_number >= query_vertex_core_number:
+                        vertex_queue.append((neighbor, temp_hop + 1))
+                        vertex_visited[neighbor] = True
+        # temporal_graph_test[temp_vertex] = list(neighbor_set)
+
+        # if temp_vertex == query_vertex or (
+        #         temp_vertex != query_vertex and len(temporal_graph_test[temp_vertex]) >= query_vertex_core_number):
+        #     candidate_vertices.append(temp_vertex)
+        #     # 处理未访问的邻居节点
+        #     for neighbor in temporal_graph_test[temp_vertex]:
+        #         if not vertex_visited[neighbor]:
+        #             vertex_queue.append((neighbor, temp_hop + 1))
+        #             vertex_visited[neighbor] = True
+
+        # neighbor_set = set()
+        # for temp_node in covered_nodes:
+        #     neighbor_set.update(temp_node.precomputed_neighbors[temp_vertex])
+        # for t in node.vertex_timestamp[temp_vertex]:
+        #     if query_time_range_start <= t <= query_time_range_end and (len(covered_nodes) == 0 or (t < covered_range[0] or t > covered_range[1])):
+        #         neighbor_set.update(temporal_graph[temp_vertex][t])
+        #
+        # if temp_vertex == query_vertex or (
+        #         temp_vertex != query_vertex and len(neighbor_set) >= query_vertex_core_number):
+        #     candidate_vertices.append(temp_vertex)
+        #     candidate_vertices_degree_projection[temp_vertex] = len(neighbor_set)
+        #     candidate_vertices_neighbor_projection[temp_vertex] = neighbor_set
+        #
+        #     # 处理未访问的邻居节点
+        #     for neighbor in neighbor_set:
+        #         if not vertex_visited[neighbor]:
+        #             vertex_queue.append((neighbor, temp_hop + 1))
+        #             vertex_visited[neighbor] = True
+    # 分析性能
+    # profiler = cProfile.Profile()
+    # profiler.enable()
+
+    s11 = time.time()
+    model_out_put_for_any_range_vertex_set(candidate_vertices, query_time_range_start, query_time_range_end)
+    # model_out_put_for_any_range_vertex_set_with_index(candidate_vertices, query_time_range_start, query_time_range_end)
+    s22 = time. time()
+    inter_time = inter_time + s22 - s11
+
+    # profiler.disable()
+    # profiler.print_stats(sort="time")  # 根据时间排序输出剖析结果
+
+    end_time = time.time()
+    print(len(candidate_vertices))
+    # print(candidate_vertices_core_numbers)
+    total_result_num += len(candidate_vertices)
+    total_query_time += end_time - start_time
+
+
+
+    print("Query test finished.")
+    if valid_query_num != 0:
+        average_query_time = total_query_time / valid_query_num
+        average_inter_time = inter_time / valid_query_num
+        print(f"Average query time: {total_query_time / valid_query_num:.4f} s")
+        print(f"Average Inter time: {inter_time / valid_query_num:.4f} s")
+        print(average_inter_time / average_query_time)
+        print(f"Average result number: {total_result_num / valid_query_num:.4f}")
+    else:
+        print(f"Total query time: {total_query_time} s")
+    # print(f"Average prediction time: {total_prediction_time / valid_query_num:.4f} s")
 # 主函数
 def main():
     # # trace memory usage
@@ -929,17 +1099,6 @@ def main():
     construct_feature_matrix()
 
     query_test()
-
-    # # 获取当前内存快照
-    # snapshot = tracemalloc.take_snapshot()
-    # top_stats = snapshot.statistics('lineno')
-    #
-    # print("[ Top 10 ]")
-    # for stat in top_stats[:10]:
-    #     print(stat)
-    #
-    # # 停止跟踪
-    # tracemalloc.stop()
 
 
 
