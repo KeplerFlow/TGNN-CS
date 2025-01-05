@@ -1,25 +1,17 @@
 import torch
-import torch.nn.functional as F
 from collections import defaultdict
 from pympler import asizeof
-from torch_geometric.data import Data, Batch
+from torch_geometric.data import Data
 
-# 设备配置
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
-
-# 读取时间序列图数据-优化内存
-def read_temporal_graph(dataset_name,num_vertex, num_edge, num_timestamp, time_edge, temporal_graph, max_degree, temporal_graph_pyg):
+def read_temporal_graph(dataset_name, device):
     print("Loading the graph...")
-    filename = f'../datasets/{dataset_name}.txt'
     time_edge = defaultdict(set)
-    # temporal_graph = defaultdict(default_dict_factory)
     temporal_graph = defaultdict(lambda: defaultdict(list))
-
+    num_vertex = 0
+    num_edge = 0
+    num_timestamp = 0
+    
+    filename = f'../datasets/{dataset_name}.txt'
     with open(filename, 'r') as f:
         first_line = True
         for line in f:
@@ -44,35 +36,45 @@ def read_temporal_graph(dataset_name,num_vertex, num_edge, num_timestamp, time_e
     edge_to_timestamps = {}
     for t, edges in time_edge.items():
         for src, dst in edges:
-            # 确保无向图 (src, dst) 和 (dst, src) 都添加时间戳
-            edge_to_timestamps.setdefault((src, dst), []).append(t)
-            edge_to_timestamps.setdefault((dst, src), []).append(t)
-    # 构造 edge_index 和 edge_attr
+            edge_to_timestamps.setdefault((src, dst), set()).add(t)
+            edge_to_timestamps.setdefault((dst, src), set()).add(t)
+
+    # 构造edge_index和稀疏edge_attr
     edge_index = []
-    edge_attr = []
+    edge_attr_indices = []  # [2, num_timestamps] - [edge_idx, timestamp_idx]
+    edge_attr_values = []  # [num_timestamps]
 
     for (src, dst), timestamps in edge_to_timestamps.items():
-        edge_index.append([src, dst])  # 添加边
-        edge_attr.append(timestamps)  # 添加时间戳
+        curr_edge_idx = len(edge_index)
+        edge_index.append([src, dst])
 
-    # 将 edge_index 转换为张量
-    edge_index = torch.tensor(edge_index, dtype=torch.long).t()  # 转置为 [2, num_edges]
+        # 为每个时间戳创建一个位置索引
+        for t_idx, t in enumerate(sorted(timestamps)):
+            edge_attr_indices.append([curr_edge_idx, t_idx])  # [边的索引, 时间戳的序号]
+            edge_attr_values.append(float(t))  # 实际的时间戳值
 
-    # 将 edge_attr 转换为张量 (需要统一长度)
-    max_timestamps = max(len(ts) for ts in edge_attr)  # 找到时间戳的最大数量
-    edge_attr = [
-        ts + [-1] * (max_timestamps - len(ts))  # 用 0 填充到相同长度
-        for ts in edge_attr
-    ]
-    edge_attr = torch.tensor(edge_attr, dtype=torch.float32)  # 转为张量
+    # 转换为张量
+    edge_index = torch.tensor(edge_index, dtype=torch.long).t()
+    edge_attr_indices = torch.tensor(edge_attr_indices, dtype=torch.long).t()
+    edge_attr_values = torch.tensor(edge_attr_values, dtype=torch.float32)
 
-    # 构造 Data 对象
+    # 获取每条边最大的时间戳数量
+    max_timestamps_per_edge = max(len(timestamps) for timestamps in edge_to_timestamps.values())
+
+    # 创建稀疏张量
+    edge_attr = torch.sparse_coo_tensor(
+        edge_attr_indices,
+        edge_attr_values,
+        size=(len(edge_index.t()), max_timestamps_per_edge),  # [num_edges, max_timestamps_per_edge]
+        device=device
+    ).coalesce()
+
+    # 构造Data对象
     temporal_graph_pyg = Data(
         edge_index=edge_index,
-        edge_attr=edge_attr,
+        edge_attr=edge_attr,  # 现在是包含实际时间戳的稀疏张量
         num_nodes=num_vertex,
     )
-
     temporal_graph_pyg = temporal_graph_pyg.to(device)
-    
 
+    return num_vertex, num_edge, num_timestamp, time_edge, temporal_graph, temporal_graph_pyg

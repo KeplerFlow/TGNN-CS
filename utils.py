@@ -1,38 +1,19 @@
+from collections import deque
+from collections import defaultdict
+import networkx as nx
 import torch
 import torch.nn.functional as F
-import numpy as np
-import torch.nn as nn
-import torch.optim as optim
-from networkx.algorithms.core import core_number
-from scipy.cluster.hierarchy import single
-from sympy import sequence
-from sympy.physics.units import frequency
-from torch.utils.data import Dataset, DataLoader
 import random
-from torch.nn.utils.rnn import pad_sequence
-from torch.cuda.amp import GradScaler, autocast
-from collections import defaultdict
-from collections import deque
-from pympler import asizeof
-from scipy.sparse import lil_matrix
-import time
-import cProfile
-import tracemalloc
-from torch_geometric.data import TemporalData
-from torch_geometric.data import Data, Batch
-from sklearn.model_selection import train_test_split
-from torch_geometric.nn import GCNConv
-from torch_geometric.nn.models.dimenet import triplets
 
-from model import TemporalGNN
-from torch.nn import init
-from torch_geometric.utils import k_hop_subgraph, subgraph
-from tqdm import tqdm
-import heapq
 
-# 获取时间范围层次
-def get_timerange_layers():
-    global time_range_layers, min_time_range_layers, max_time_range_layers
+
+def get_timerange_layers(num_timestamp, max_range, partition):
+    print("Calculating time range layers...")
+    time_range_set = set()
+    time_range_layers = []
+    max_time_range_layers = []
+    min_time_range_layers = []
+    
     temp_range = num_timestamp
     while temp_range > max_range:
         temp_range = temp_range // partition
@@ -58,13 +39,43 @@ def get_timerange_layers():
         min_time_range_layers.append(temp_min_range)
         temp_range = temp_range * partition
         layer_id = layer_id + 1
+    
     time_range_layers.reverse()
     max_time_range_layers.reverse()
     min_time_range_layers.reverse()
+    
+    max_layer_id = layer_id
+    print(f"Number of layers: {max_layer_id}")
+    
+    return time_range_layers, min_time_range_layers, max_time_range_layers, time_range_set, max_layer_id
 
-def construct_feature_matrix():
+def read_core_number(dataset_name, num_vertex, time_range_set):
+
+    print("Loading the core number...")
+    vertex_core_numbers = [{} for _ in range(num_vertex)]
+    time_range_core_number = {time_range: {} for time_range in time_range_set}  # Initialize dictionary for time ranges
+    core_number_filename = f'../datasets/{dataset_name}-core_number.txt'
+
+    with open(core_number_filename, 'r') as f:
+        num_core_number = int(f.readline().strip())  # Read the first line as num_core_number directly
+
+        for line in f:
+            range_part, core_numbers_part = line.split(' ', 1)
+            range_start, range_end = map(int, range_part.strip('[]').split(','))
+            is_node_range = (range_start, range_end) in time_range_set
+
+            for pair in core_numbers_part.split():
+                vertex, core_number = map(int, pair.split(':'))
+                if range_start == range_end:
+                    vertex_core_numbers[vertex][range_start] = core_number
+                if is_node_range:
+                    time_range_core_number[(range_start, range_end)][vertex] = core_number
+
+    return num_core_number, vertex_core_numbers, time_range_core_number
+
+def construct_feature_matrix(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device):
     print("Constructing the feature matrix...")
-    global sequence_features1_matrix, indices_vertex_of_matrix
+    sequence_features1_matrix = torch.empty(0, 0, 0)
     indices = []
     values = []
 
@@ -106,90 +117,159 @@ def construct_feature_matrix():
     total_size = indices_size + values_size
     print(f"feature matrix 占用的内存大小为 {total_size / (1024 ** 2):.2f} MB")
 
-# 读取节点的核心数
-def read_core_number():
-    print("Loading the core number...")
-    global num_core_number, vertex_core_numbers
-    vertex_core_numbers = [{} for _ in range(num_vertex)]
-    core_number_filename = f'../datasets/{dataset_name}-core_number.txt'
-    with open(core_number_filename, 'r') as f:
-        first_line = True
-        for line in f:
-            if first_line:
-                num_core_number = int(line.strip())
-                first_line = False
-                continue
-            range_part, core_numbers_part = line.split(' ', 1)
-            range_start, range_end = map(int, range_part.strip('[]').split(','))
-            is_node_range = False
-            if (range_start, range_end) in time_range_set:
-                is_node_range = True
-            for pair in core_numbers_part.split():
-                vertex, core_number = map(int, pair.split(':'))
-                if range_start == range_end:
-                    vertex_core_numbers[vertex][range_start] = core_number
-                if is_node_range:
-                    time_range_core_number[(range_start, range_end)][vertex] = core_number
+    return sequence_features1_matrix.to(device)
 
-def read_temporal_graph():
-    print("Loading the graph...")
-    filename = f'../datasets/{dataset_name}.txt'
-    global num_vertex, num_edge, num_timestamp, time_edge, temporal_graph, max_degree, temporal_graph_pyg
-    time_edge = defaultdict(set)
-    # temporal_graph = defaultdict(default_dict_factory)
-    temporal_graph = defaultdict(lambda: defaultdict(list))
+def init_vertex_features(t_start, t_end, vertex_set, feature_dim, anchor, sequence_features1_matrix, time_range_core_number, device):
 
-    with open(filename, 'r') as f:
-        first_line = True
-        for line in f:
-            if first_line:
-                num_vertex, num_edge, num_timestamp = map(int, line.strip().split())
-                first_line = False
-                continue
-            v1, v2, t = map(int, line.strip().split())
-            if v1 == v2:
-                continue
-            if v1 > v2:
-                v1, v2 = v2, v1
-            time_edge[t].add((v1, v2))
-            # 构建temporal_graph
-            temporal_graph[v1][t].append(v2)
-            temporal_graph[v2][t].append(v1)
+    vertex_indices = vertex_set
+    
+    indices = sequence_features1_matrix.indices()
+    values = sequence_features1_matrix.values()
 
-    total_size = asizeof.asizeof(temporal_graph)
-    print(f"temporal_graph 占用的内存大小为 {total_size / (1024 ** 2):.2f} MB")
+    start_idx = torch.searchsorted(indices[0], vertex_indices, side='left')
+    end_idx = torch.searchsorted(indices[0], vertex_indices, side='right')
 
-    # 转为pyG Data格式
-    edge_to_timestamps = {}
-    for t, edges in time_edge.items():
-        for src, dst in edges:
-            # 确保无向图 (src, dst) 和 (dst, src) 都添加时间戳
-            edge_to_timestamps.setdefault((src, dst), []).append(t)
-            edge_to_timestamps.setdefault((dst, src), []).append(t)
-    # 构造 edge_index 和 edge_attr
-    edge_index = []
-    edge_attr = []
+    range_lengths = end_idx - start_idx
+    total_indices = range_lengths.sum()
 
-    for (src, dst), timestamps in edge_to_timestamps.items():
-        edge_index.append([src, dst])  # 添加边
-        edge_attr.append(timestamps)  # 添加时间戳
+    range_offsets = torch.cat([torch.zeros(1, device=device, dtype=torch.long), range_lengths.cumsum(dim=0)[:-1]])
+    flat_indices = torch.arange(total_indices, device=device) - range_offsets.repeat_interleave(range_lengths)
 
-    # 将 edge_index 转换为张量
-    edge_index = torch.tensor(edge_index, dtype=torch.long).t()  # 转置为 [2, num_edges]
+    mask_indices = start_idx.repeat_interleave(range_lengths) + flat_indices
 
-    # 将 edge_attr 转换为张量 (需要统一长度)
-    max_timestamps = max(len(ts) for ts in edge_attr)  # 找到时间戳的最大数量
-    edge_attr = [
-        ts + [0] * (max_timestamps - len(ts))  # 用 0 填充到相同长度
-        for ts in edge_attr
-    ]
-    edge_attr = torch.tensor(edge_attr, dtype=torch.float32)  # 转为张量
+    vertex_mask = torch.zeros(indices.shape[1], dtype=torch.bool, device=device)
+    vertex_mask[mask_indices] = True
 
-    # 构造 Data 对象
-    temporal_graph_pyg = Data(
-        edge_index=edge_index,
-        edge_attr=edge_attr,
-        num_nodes=num_vertex,
+    filtered_indices = indices[:, vertex_mask]
+    filtered_values = values[vertex_mask]
+
+    time_mask = (
+            (filtered_indices[1] >= t_start) &
+            (filtered_indices[1] <= t_end)
     )
+    final_indices = filtered_indices[:, time_mask]
+    final_values = filtered_values[time_mask]
 
-    temporal_graph_pyg = temporal_graph_pyg.to(device)
+    vertex_map = torch.zeros(vertex_indices.max() + 1, dtype=torch.long, device=device)
+    vertex_map[vertex_indices] = torch.arange(len(vertex_indices), device=device)
+
+    final_indices[0] = vertex_map[final_indices[0]]
+    final_indices[1] -= t_start
+
+    result_size = (
+        len(vertex_indices), t_end - t_start + 1, sequence_features1_matrix.size(2)
+    )
+    result_sparse_tensor = torch.sparse_coo_tensor(
+        final_indices, final_values, size=result_size
+    )
+    degree_tensor = result_sparse_tensor.to_dense()[:, :, 1]
+    degree_tensor.to(device)
+
+    degree_tensor = degree_tensor.unsqueeze(1)
+    if degree_tensor.shape[2] < feature_dim - 1:
+        degree_tensor = F.interpolate(degree_tensor, size=feature_dim - 2, mode='linear', align_corners=True)
+    else:
+        degree_tensor = F.adaptive_avg_pool1d(degree_tensor, output_size=feature_dim - 2)
+    degree_tensor = degree_tensor.squeeze(1)
+    core_number_values = torch.tensor([time_range_core_number[(t_start, t_end)].get(v.item(), 0) for v in vertex_set],
+                                      dtype=torch.float32, device=device)
+    core_number_values = (core_number_values - core_number_values.min()) / (
+                core_number_values.max() - core_number_values.min() + 1e-6)
+
+
+    # 全矩阵归一化
+    vertex_features_matrix = degree_tensor
+    matrix_max = torch.max(vertex_features_matrix)
+    matrix_min = torch.min(vertex_features_matrix)
+    vertex_features_matrix = (vertex_features_matrix - matrix_min) / (matrix_max - matrix_min + 1e-6)
+    vertex_features_matrix = torch.cat([core_number_values.unsqueeze(1), vertex_features_matrix], dim=1)
+
+    query_feature = torch.zeros(len(vertex_set), 1, device=device)
+    if anchor != -1:
+        query_feature[vertex_map[anchor]][0] = 1
+    vertex_features_matrix = torch.cat([query_feature, vertex_features_matrix], dim=1)
+    return vertex_features_matrix
+
+def get_candidate_neighbors(center_vertex, k, t_start, t_end, filtered_temporal_graph, total_edge_weight, time_range_core_number, subgraph_k_hop_cache):
+
+    cache_key = (center_vertex, k, t_start, t_end)
+    if cache_key in subgraph_k_hop_cache:
+      return subgraph_k_hop_cache[cache_key]
+    
+    visited = set()
+    visited.add(center_vertex)
+    query_core_number = time_range_core_number[(t_start, t_end)].get(center_vertex, 0)
+    queue = deque([(center_vertex, query_core_number, 0)])  # 队列初始化 (节点, core number, 距离)
+    subgraph_result = set()
+    core_number_condition = query_core_number * 0.2
+    current_hop = 0
+    total_core_number = 0
+    tau = 0.5
+    best_avg_core_number = 0
+    while queue:
+        top_vertex, neighbor_core_number, hop = queue.popleft()
+        if hop > k:
+            average_core_number = total_core_number / (len(subgraph_result) ** tau)
+            # print(f"Average core number: {average_core_number}")
+            break
+        if hop > current_hop:
+            average_core_number = total_core_number / (len(subgraph_result) ** tau)
+            # print(f"Average core number: {average_core_number}")
+            current_hop = hop
+            if average_core_number > best_avg_core_number:
+                best_avg_core_number = average_core_number
+            else:
+                break
+        subgraph_result.add(top_vertex)
+        if len(subgraph_result) > 8000:
+            break
+        total_core_number += neighbor_core_number
+        if top_vertex in filtered_temporal_graph:
+           for (neighbor, edge_count, neighbor_core_number) in filtered_temporal_graph[top_vertex]:
+               # if neighbor not in visited and neighbor_core_number >= core_number_condition:
+               if neighbor not in visited:
+                 queue.append((neighbor, neighbor_core_number, hop + 1))
+                 visited.add(neighbor)
+    subgraph_k_hop_cache[cache_key] = subgraph_result
+    return subgraph_result
+
+def compute_modularity(subgraph, filtered_temporal_graph, total_edge_weight):
+    
+    subgraph = set(subgraph)
+    internal_weights = 0  # 子图内部边的权重和
+    total_weights = 0  # 所有边的权重和
+
+    # 1. 统计边权重和节点强度
+    for vertex in subgraph:
+        if vertex in filtered_temporal_graph:
+            for (neighbor, edge_count, _) in filtered_temporal_graph[vertex]:
+              # 更新节点强度和总权重
+              total_weights += edge_count
+
+              # 统计内部边权重（只统计一个方向）
+              if neighbor in subgraph and vertex < neighbor:
+                internal_weights += edge_count
+
+    # 如果没有边，返回0
+    if total_weights == 0:
+        return 0.0
+    # 3. 计算带权重的modularity
+    # density modularity
+    modularity = (1.0 / len(subgraph)) * (internal_weights - (total_weights ** 2) / (4 * total_edge_weight))
+    # classic modularity
+    # modularity = (1.0 / (2 * total_edge_weight)) * (internal_weights - (total_weights ** 2) / (2 * total_edge_weight))
+
+
+    return modularity
+
+class MultiSampleQuadrupletDataset():
+    def __init__(self, quadruplets):
+        self.quadruplets = quadruplets
+
+    def __len__(self):
+        return len(self.quadruplets)
+
+    def __getitem__(self, idx):
+        anchor, positives, negatives, time_range = self.quadruplets[idx]
+        return anchor, list(positives), list(negatives), time_range
+
