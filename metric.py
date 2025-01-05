@@ -8,7 +8,7 @@ def compute_density(vertex_set, t_start, t_end,temporal_graph):
                     if neighbor in vertex_set:
                         time_edges_count += 1
                         time_stamps.add(t)
-    temporal_density = time_edges_count / ((len(vertex_set) * (len(vertex_set) - 1)) * len(time_stamps))
+    temporal_density = time_edges_count / ((len(vertex_set) * (len(vertex_set) + 1)) * len(time_stamps)+1)
     return temporal_density
 
 def compute_conductance(vertex_set, t_start, t_end,temporal_graph,num_vertex):

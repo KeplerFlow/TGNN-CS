@@ -37,6 +37,9 @@ from extract_subgraph import *
 from train import *
 from query import *
 
+import cProfile
+
+
 # 主函数
 def main():
     if torch.cuda.is_available():
@@ -82,12 +85,12 @@ def main():
     edge_dim = 8
     learning_rate = 0.001
     epochs = 3
-    batch_size = 4
+    batch_size = 16
     k_hop = 5
     positive_hop = 3
     alpha = 0.1
     num_time_range_samples = 10
-    num_anchor_samples = 10
+    num_anchor_samples = 100
     test_result_list = []
 
     num_vertex, num_edge, num_timestamp, time_edge, temporal_graph, temporal_graph_pyg = read_temporal_graph(dataset_name,device)
@@ -99,6 +102,13 @@ def main():
     num_core_number, vertex_core_numbers, time_range_core_number = read_core_number(dataset_name, num_vertex, time_range_set)
     
     sequence_features1_matrix = construct_feature_matrix(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
+    
+    # sequence_features_matrix_tree, indices_vertex_of_matrix = construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
+
+    # root, max_layer_id = build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers)
+
+    # load_models(0, time_range_layers, max_layer_id, device, dataset_name, 
+    #             max_time_range_layers, partition,root,num_timestamp)
     
     model = AdapterTemporalGNN(node_in_channels, node_out_channels, edge_dim=edge_dim).to(device)
     
@@ -341,65 +351,262 @@ def main():
     avg_sim_pos, avg_sim_neg = test_model(model, test_loader, device, subgraph_pyg_cache, subgraph_k_hop_cache, subgraph_vertex_map_cache, num_vertex)
     test_result_list.append((avg_sim_pos, avg_sim_neg))
 
-    # begin to finetune
-
-     # 冻结非adapter参数
+    # 1. 首先冻结所有参数
     for name, param in model.named_parameters():
-        if 'adapter' not in name and 'gating_params' not in name:
-            param.requires_grad = False
+        param.requires_grad = False
     
-    # 只优化adapter参数
-    adapter_params = [p for n, p in model.named_parameters() if 'adapter' in n or 'gating_params' in n]
-    optimizer = torch.optim.Adam(adapter_params, lr=0.001)
+    # 2. 只解冻Adapter和gate参数
+    for name, param in model.named_parameters():
+        if 'adapter' in name or 'gating_params' in name:
+            param.requires_grad = True
+
+    optimizer = optim.Adam(
+        [p for n, p in model.named_parameters() if ('adapter' in n or 'gating_params' in n) and p.requires_grad],
+        lr=learning_rate
+    )
     scaler = GradScaler()  # 混合精度训练
 
-    # beigin to query
-
-    # compute the feature matrix again
     sequence_features2_matrix = construct_feature_matrix(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
 
     test_time_range_list = []
     while len(test_time_range_list) < 10:
         t_layer = random.randint(1, len(time_range_layers) - 2)
+        if t_layer == 0:
+            continue
         t_idx = random.randint(0, len(time_range_layers[t_layer]) - 1)
         t_start, t_end = time_range_layers[t_layer][t_idx][0], time_range_layers[t_layer][t_idx][1]
         if (t_start, t_end) not in test_time_range_list:
             test_time_range_list.append((t_start, t_end))
     temporal_density_ratio = 0
     temporal_conductance_ratio = 0
+    num_anchor_samples = 10
     valid_cnt = 0
     total_time = 0
     result_len = 0
+    epochs = 2
+
     for t_start, t_end in test_time_range_list:
         print(f"Test time range: [{t_start}, {t_end}]")
         query_vertex_list = set()
         while len(query_vertex_list) < 10:
-            query_vertex = random.choice
+            query_vertex = random.choice(range(num_vertex))
             core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
             while core_number < 5:
                 query_vertex = random.choice(range(num_vertex))
                 core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
             query_vertex_list.add(query_vertex)
+
         for query_vertex in query_vertex_list:
             print(valid_cnt)
             start_time = time.time()
-            feature_dim = node_in_channels
-            subgraph, vertex_map, neighbors_k_hop = extract_subgraph(query_vertex, t_start, t_end, k_hop, feature_dim, temporal_graph, temporal_graph_pyg, num_vertex, edge_dim, sequence_features2_matrix, time_range_core_number,device)
-            embeddings = model(subgraph)
-            query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)
-            neighbors_embeddings = embeddings[vertex_map[neighbors_k_hop]]
-            # 计算距离
-            distances = F.pairwise_distance(query_vertex_embedding, neighbors_embeddings)
 
-            # test query time
-            GNN_temporal_density, GNN_temporal_conductance,result = temporal_test_GNN_query_time(distances, vertex_map, query_vertex, t_start, t_end, temporal_graph, device,num_vertex)
-            temporal_density_ratio+=GNN_temporal_density
-            temporal_conductance_ratio+=GNN_temporal_conductance
-            result_len+=len(result)
+            # 为查询节点生成训练数据
+            center_vertices = {query_vertex}  # 只使用查询节点作为中心
+            triplets = generate_triplets(center_vertices, k_hop, t_start, t_end, num_vertex, temporal_graph,
+                                        time_range_core_number, time_range_link_samples_cache, subgraph_k_hop_cache)
+            quadruplet = [(t[0], t[1], t[2], (t_start, t_end)) for t in triplets]
+
+            # 创建数据加载器
+            query_dataset = MultiSampleQuadrupletDataset(quadruplet)
+            query_loader = DataLoader(query_dataset, batch_size=batch_size, shuffle=True,num_workers=8,pin_memory=True,
+                                    collate_fn=quadruplet_collate_fn)
+            # before finetune
+            # 评估阶段
+            model.eval()
+            with torch.no_grad():
+                feature_dim = node_in_channels
+                subgraph, vertex_map, neighbors_k_hop = extract_subgraph(query_vertex, t_start, t_end, k_hop,
+                                                                        feature_dim, temporal_graph,
+                                                                        temporal_graph_pyg, num_vertex, edge_dim,
+                                                                        sequence_features2_matrix,
+                                                                        time_range_core_number, device)
+                if subgraph is not None and vertex_map is not None and query_vertex in vertex_map:
+                    embeddings = model(subgraph.to(device))
+                    query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)
+
+                    # 确保 neighbors_k_hop 中的邻居在 vertex_map 中
+                    valid_neighbors_k_hop = [n for n in neighbors_k_hop if n in vertex_map]
+                    if valid_neighbors_k_hop:
+                        neighbors_embeddings = embeddings[torch.tensor([vertex_map[i] for i in valid_neighbors_k_hop], device=device)]
+                        distances = F.pairwise_distance(query_vertex_embedding, neighbors_embeddings)
+                        GNN_temporal_density, GNN_temporal_conductance, result = temporal_test_GNN_query_time(
+                            distances, vertex_map, query_vertex, t_start, t_end, temporal_graph, device, num_vertex
+                        )
+                        temporal_density_ratio += GNN_temporal_density
+                        temporal_conductance_ratio += GNN_temporal_conductance
+                        result_len += len(result)
+                        print(f"before test number: {len(result)}")
+                        print(f"before temporal density ratio: {GNN_temporal_density}")
+                        print(f"before temporal conductance ratio: {GNN_temporal_conductance}")
+                else:
+                    continue
+            
+            # 查询特定的微调
+            model.train()
+            subgraph_pyg, vertex_map,neighbors_k_hop = extract_subgraph(query_vertex, t_start, t_end, k_hop,
+                                                                        feature_dim, temporal_graph,
+                                                                        temporal_graph_pyg, num_vertex, edge_dim,
+                                                                        sequence_features2_matrix,
+                                                                        time_range_core_number, device)
+            
+            for epoch in range(epochs):
+                model.train()
+                epoch_loss = 0.0
+                epoch_start_time = time.time()
+                timing_info = {
+                    "data_loading": 0.0,
+                    "data_preparation": 0.0,
+                    "forward_pass": 0.0,
+                    "loss_calculation": 0.0,
+                    "backward_pass": 0.0,
+                    "optimizer_step": 0.0,
+                }
+                for batch_idx, batch in enumerate(train_loader):
+                    batch_start_time = time.time()
+                    
+                    data_loading_start_time = time.time()
+                    anchors, positives, negatives, time_ranges = batch
+                    anchors = torch.tensor(anchors, device=device)
+                    timing_info["data_loading"] += time.time() - data_loading_start_time
+
+                    data_preparation_start_time = time.time()
+                    positives = [torch.tensor(pos, device=device) for pos in positives]
+                    negatives = [torch.tensor(neg, device=device) for neg in negatives]
+
+                    optimizer.zero_grad()
+
+                    subgraphs = []
+                    vertex_maps = []
+                    for anchor, time_range in zip(anchors, time_ranges):
+                        # Add subgraph creation logic here
+                        subgraphs.append(subgraph_pyg)
+                        vertex_maps.append(vertex_map)
+                        
+                    batched_subgraphs = Batch.from_data_list(subgraphs).to(device)
+                    timing_info["data_preparation"] += time.time() - data_preparation_start_time
+
+                    forward_start_time = time.time()
+                    embeddings = model(batched_subgraphs)
+                    timing_info["forward_pass"] += time.time() - forward_start_time
+
+                    loss_calculation_start_time = time.time()
+                    batch_indices = batched_subgraphs.batch
+                    del batched_subgraphs
+
+                    batch_loss = 0.0
+                    for i, (anchor, pos_samples, neg_samples, vertex_map, time_range) in enumerate(
+                            zip(anchors, positives, negatives, vertex_maps, time_ranges)):
+                        node_indices = (batch_indices == i).nonzero(as_tuple=True)[0]
+                        anchor_idx = node_indices[vertex_map[anchor.long()]]
+                        
+                        pos_samples = pos_samples.to(device)
+                        neg_samples = neg_samples.to(device)
+                        pos_indices = node_indices[vertex_map[pos_samples.long()]]
+                        neg_indices = node_indices[vertex_map[neg_samples.long()]]
+
+                        if len(pos_indices) == 0 or len(neg_indices) == 0:
+                            continue
+
+                        with autocast():
+                            loss = margin_triplet_loss(
+                                embeddings[anchor_idx],
+                                embeddings[pos_indices],
+                                embeddings[neg_indices]
+                            )
+                            batch_loss += loss
+
+                    if len(vertex_maps) > 0:
+                        batch_loss = batch_loss / len(vertex_maps)
+                    timing_info["loss_calculation"] += time.time() - loss_calculation_start_time
+
+                    backward_start_time = time.time()
+                    optimizer.zero_grad()
+                    if scaler is not None:
+                        scaler.scale(batch_loss).backward()
+                    else:
+                        batch_loss.backward()
+                    timing_info["backward_pass"] += time.time() - backward_start_time
+
+                    # 优化器步骤
+                    optimizer_step_start_time = time.time()
+                    if scaler is not None:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                    timing_info["optimizer_step"] += time.time() - optimizer_step_start_time
+
+                    epoch_loss += batch_loss.item()
+
+                torch.cuda.empty_cache()
+                epoch_end_time = time.time()
+                epoch_total_time = epoch_end_time - epoch_start_time
+
+                timing_percentages = {
+                    k: (v / epoch_total_time) * 100 for k, v in timing_info.items()
+                }
+                print(f"epoch_total_time: {epoch_total_time} ")
+                print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss / len(train_loader):.4f}", end=' ')
+                print("耗时占比:")
+                for name, percentage in timing_percentages.items():
+                    print(f"  {name}: {percentage:.2f}%")
+
+            # 评估阶段
+            model.eval()
+            with torch.no_grad():
+                feature_dim = node_in_channels
+                subgraph, vertex_map, neighbors_k_hop = extract_subgraph(query_vertex, t_start, t_end, k_hop,
+                                                                        feature_dim, temporal_graph,
+                                                                        temporal_graph_pyg, num_vertex, edge_dim,
+                                                                        sequence_features2_matrix,
+                                                                        time_range_core_number, device)
+                if subgraph is not None and vertex_map is not None and query_vertex in vertex_map:
+                    embeddings = model(subgraph.to(device))
+                    query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)
+
+                    # 确保 neighbors_k_hop 中的邻居在 vertex_map 中
+                    valid_neighbors_k_hop = [n for n in neighbors_k_hop if n in vertex_map]
+                    if valid_neighbors_k_hop:
+                        neighbors_embeddings = embeddings[torch.tensor([vertex_map[i] for i in valid_neighbors_k_hop], device=device)]
+                        distances = F.pairwise_distance(query_vertex_embedding, neighbors_embeddings)
+                        GNN_temporal_density, GNN_temporal_conductance, result = temporal_test_GNN_query_time(
+                            distances, vertex_map, query_vertex, t_start, t_end, temporal_graph, device, num_vertex
+                        )
+                        temporal_density_ratio += GNN_temporal_density
+                        temporal_conductance_ratio += GNN_temporal_conductance
+                        result_len += len(result)
+                        print(f"after test number: {len(result)}")
+                        print(f"after temporal density ratio: {GNN_temporal_density}")
+                        print(f"after temporal conductance ratio: {GNN_temporal_conductance}")
 
             end_time = time.time()
             total_time += end_time - start_time
             valid_cnt += 1
+
+            # 清理缓存
+            torch.cuda.empty_cache()
+
+
+        # for query_vertex in query_vertex_list:
+        #     print(valid_cnt)
+        #     start_time = time.time()
+        #     feature_dim = node_in_channels
+        #     subgraph, vertex_map, neighbors_k_hop = extract_subgraph(query_vertex, t_start, t_end, k_hop, feature_dim, temporal_graph, temporal_graph_pyg, num_vertex, edge_dim, sequence_features2_matrix, time_range_core_number,device)
+        #     embeddings = model(subgraph)
+        #     query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)
+        #     neighbors_embeddings = embeddings[vertex_map[neighbors_k_hop]]
+        #     # 计算距离
+        #     distances = F.pairwise_distance(query_vertex_embedding, neighbors_embeddings)
+
+        #     # test query time
+        #     GNN_temporal_density, GNN_temporal_conductance,result = temporal_test_GNN_query_time(distances, vertex_map, query_vertex, t_start, t_end, temporal_graph, device,num_vertex)
+        #     temporal_density_ratio+=GNN_temporal_density
+        #     temporal_conductance_ratio+=GNN_temporal_conductance
+        #     result_len+=len(result)
+
+        #     end_time = time.time()
+        #     total_time += end_time - start_time
+        #     valid_cnt += 1
     print(f"Valid test number: {valid_cnt}")
     print(f"Average temporal density ratio: {temporal_density_ratio / valid_cnt}")
     print(f"Average temporal conductance ratio: {temporal_conductance_ratio / valid_cnt}")
@@ -408,6 +615,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # cProfile.run('main()')
+    cProfile.run('main()')
     # torch.cuda.empty_cache()
     main()

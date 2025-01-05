@@ -4,7 +4,8 @@ import networkx as nx
 import torch
 import torch.nn.functional as F
 import random
-
+from Tree import *
+from MLP_models import *
 
 
 def get_timerange_layers(num_timestamp, max_range, partition):
@@ -118,6 +119,60 @@ def construct_feature_matrix(num_vertex, num_timestamp, temporal_graph, vertex_c
     print(f"feature matrix 占用的内存大小为 {total_size / (1024 ** 2):.2f} MB")
 
     return sequence_features1_matrix.to(device)
+
+def construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device):
+    indices_vertex_of_matrix = torch.zeros(num_vertex, 2, dtype=torch.int64, device=device)
+    indices = []
+    values = []
+
+    idx = 0
+    for v in range(num_vertex):
+        start_idx = idx
+        for t, neighbors in temporal_graph[v].items():
+            core_number = vertex_core_numbers[v].get(t, 0)  # 获取核心数，默认为0
+            neighbor_count = len(neighbors)  # 邻居数量
+            if core_number > 0:
+                # 添加索引 [vertex_index, timestamp, feature_index]
+                indices.append([v, t, 0])
+                values.append(core_number)
+                idx = idx + 1
+            if neighbor_count > 0:
+                indices.append([v, t, 1])
+                values.append(neighbor_count)
+                idx = idx + 1
+        if start_idx != idx:
+            indices_vertex_of_matrix[v][0] = start_idx
+            indices_vertex_of_matrix[v][1] = idx - 1
+        else:
+            indices_vertex_of_matrix[v][0] = -1
+            indices_vertex_of_matrix[v][1] = -1
+
+    # 将索引和数值转换为张量
+    indices = torch.tensor(indices).T  # 转置为形状 (3, N)
+    values = torch.tensor(values, dtype=torch.float32)
+
+    # 对索引排序 方便后续的二分查找
+    sorted_order = torch.argsort(indices[0])
+    sorted_indices = indices[:, sorted_order]       # 对 indices 排序
+    sorted_values = values[sorted_order]            # 对 values 按相同顺序排序
+
+    # 创建稀疏张量
+    sequence_features1_matrix = torch.sparse_coo_tensor(
+        sorted_indices,
+        sorted_values,
+        size=(num_vertex, num_timestamp, 2),
+        device=device
+    )
+
+    sequence_features1_matrix = sequence_features1_matrix.coalesce()
+
+    # 计算稀疏张量实际占用的内存大小
+    indices_size = sorted_indices.element_size() * sorted_indices.numel()
+    values_size = sorted_values.element_size() * sorted_values.numel()
+    total_size = indices_size + values_size
+    print(f"feature matrix 占用的内存大小为 {total_size / (1024 ** 2):.2f} MB")
+
+    return sequence_features1_matrix, indices_vertex_of_matrix
 
 def init_vertex_features(t_start, t_end, vertex_set, feature_dim, anchor, sequence_features1_matrix, time_range_core_number, device):
 
@@ -261,6 +316,141 @@ def compute_modularity(subgraph, filtered_temporal_graph, total_edge_weight):
 
 
     return modularity
+
+def build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers):
+    node_stack = []
+    root_node = TreeNode((0, num_timestamp-1), 0)
+    max_layer_id = 0 # Initialize max_layer_id locally
+    node_stack.append(root_node)
+    while len(node_stack) > 0:
+        current_node = node_stack.pop()
+        current_node.vertex_core_number = time_range_core_number[(current_node.time_start, current_node.time_end)]
+        current_node.vertex_degree = defaultdict(int)
+        if current_node.layer_id != 0:
+            for v in range(num_vertex):
+                neighbors_set = set()
+                for t, neighbors in temporal_graph[v].items():
+                    if current_node.time_start <= t <= current_node.time_end:
+                        neighbors_set.update(neighbors)
+                if len(neighbors_set) > 0:
+                    current_node.vertex_degree[v] = len(neighbors_set)
+
+        if current_node.layer_id < len(time_range_layers) - 1:
+            for i in range(len(time_range_layers[current_node.layer_id + 1])):
+                temp_time_start = time_range_layers[current_node.layer_id +1][i][0]
+                temp_time_end = time_range_layers[current_node.layer_id + 1][i][1]
+                if temp_time_start >= current_node.time_start and temp_time_end <= current_node.time_end:
+                    child_node = TreeNode((temp_time_start, temp_time_end), current_node.layer_id + 1)
+                    current_node.add_child(child_node)
+                    node_stack.append(child_node)
+                    max_layer_id = max(max_layer_id, current_node.layer_id + 1) # Update max_layer_id locally
+
+    return root_node, max_layer_id
+
+def tree_query(time_start, time_end, num_timestamp, root, max_layer_id):
+    if time_start < 0 or time_end >= num_timestamp or time_start > time_end:
+        return None
+
+    node = root
+    while node.layer_id < max_layer_id:
+        move_to_next = False
+        for child in node.children:
+            if child.time_start <= time_start and child.time_end >= time_end:
+                node = child
+                move_to_next = True
+                break
+        if not move_to_next:
+            break
+    return node
+
+def get_node_path(time_start, time_end, num_timestamp, root, max_layer_id):
+    if time_start < 0 or time_end >= num_timestamp or time_start > time_end:
+        return None
+    path = [root]
+    node = root
+    while node.layer_id < max_layer_id:
+        move_to_next = False
+        for child in node.children:
+            if child.time_start <= time_start and child.time_end >= time_end:
+                node = child
+                path.append(node)
+                move_to_next = True
+                break
+        if not move_to_next:
+            break
+    return path
+
+def model_output_for_path(time_start, time_end, vertex_set, sequence_features, 
+                          num_timestamp, root, max_layer_id, device, max_time_range_layers, partition):
+    if time_start < 0 or time_end >= num_timestamp or time_start > time_end:
+        return torch.zeros(len(vertex_set), 1, device=device)
+    sequence_features = sequence_features.to(device)
+    node = root
+    path = [node]
+    while node.layer_id < max_layer_id:
+        move_to_next = False
+        for child in node.children:
+            if child.time_start <= time_start and child.time_end >= time_end:
+                node = child
+                path.append(node)
+                move_to_next = True
+                break
+        if not move_to_next:
+            break
+    if len(path) == 1:
+        return torch.zeros(len(vertex_set), 1, device=device)
+
+    # 计算模型输出
+    path.pop()
+    output = torch.zeros(len(vertex_set), 1, dtype=torch.float32, device=device)
+    sequence_input1 = torch.zeros(len(vertex_set), max_time_range_layers[0], 2, device=device)
+    sequence_input1[:, 0:sequence_features.shape[1], :] = sequence_features
+    for node in path:
+        max_length1 = max_time_range_layers[node.layer_id + 1] * 2
+        max_length2 = partition
+        # 构造模型输入
+        sequence_input1 = sequence_input1[:, :max_length1, :]
+        sequence_input2 = torch.zeros(len(vertex_set), max_length2, 2, device=device)
+
+        single_value = output
+
+        model = node.model
+        with torch.no_grad():
+            output = model(sequence_input1, sequence_input2, single_value)
+            if output.dim() == 0:
+                output = output.reshape(len(vertex_set), 1)
+    return output
+
+def load_models(depth_id, time_range_layers, max_layer_id, device, dataset_name, 
+                max_time_range_layers, partition,root,num_timestamp):
+    model_time_range_layers = [[] for _ in range(len(time_range_layers))]
+    print("Loading models...")
+    for layer_id in range(0, depth_id + 1):
+        for i in range(len(time_range_layers[layer_id])):
+            print(f"{i+1}/{len(time_range_layers[layer_id])}")
+            time_start = time_range_layers[layer_id][i][0]
+            time_end = time_range_layers[layer_id][i][1]
+            model = None
+            if layer_id != max_layer_id:
+                model = MLPNonleaf(2, max_time_range_layers[layer_id + 1] * 2, partition, 64).to(device)
+                model_path = f'models/{dataset_name}/model_{layer_id}_{i}.pth'
+            else:
+                model = MLP(2, max_time_range_layers[max_layer_id], 64).to(device)
+                model_path = f'models/{dataset_name}/model_{layer_id}_{i}.pth'
+
+            try:
+                model.load_state_dict(torch.load(model_path))
+                model.eval()
+            except FileNotFoundError:
+                print(f"Warning: Model file not found: {model_path}")
+                continue  # 或者根据需要进行其他处理
+
+            # 使用传入的 tree_query_func
+            node = tree_query(time_start, time_end, num_timestamp, root, max_layer_id)
+            if node is None:
+                print("Error: node not found.")
+            else:
+                node.set_model(model)
 
 class MultiSampleQuadrupletDataset():
     def __init__(self, quadruplets):

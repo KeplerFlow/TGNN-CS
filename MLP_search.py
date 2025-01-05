@@ -19,7 +19,7 @@ import cProfile
 import tracemalloc
 
 
-from MLP_models import MLP, MLPNonleaf, preprocess_sequences, SequenceDataset, SequenceDatasetNonleaf
+from MLP_models import MLP, MLPNonleaf
 from Tree import TreeNode
 
 # 设备配置
@@ -147,7 +147,6 @@ def get_timerange_layers():
     time_range_layers.reverse()
     max_time_range_layers.reverse()
     min_time_range_layers.reverse()
-
 
 def build_tree():
     node_stack = []
@@ -487,203 +486,6 @@ def model_out_put_for_any_range_vertex_set(vertex_set, time_start, time_end):
             output = model(sequence_features1, sequence_features2, single_value)
         return output
 
-# @profile
-def model_out_put_for_any_range_vertex_set_with_index(vertex_set, time_start, time_end):
-    # 直接用tensor
-    global inter_time
-    node = tree_query(time_start, time_end)
-    if node is None:
-        print("Error: node not found.")
-        return torch.zeros(len(vertex_set))
-    model = node.model  # 设置模型为评估模式
-    model.eval()
-    if node.layer_id == max_layer_id:
-        # 直接截取特征
-        max_length = max_time_range_layers[node.layer_id]
-
-        vertex_indices = torch.tensor(vertex_set, device=device)
-
-        # 获取 indices 和 values
-        indices = sequence_features1_matrix.indices()  # (n, nnz)
-        values = sequence_features1_matrix.values()  # (nnz,)
-
-        ranges_idx = indices_vertex_of_matrix[vertex_indices]
-
-        filtered_indices = torch.cat([indices[:, start:end+1] for start, end in ranges_idx], dim=1)
-        filtered_values = torch.cat([values[start:end+1] for start, end in ranges_idx], dim=0)
-
-        # 筛选时间范围
-        time_mask = (
-                (filtered_indices[1] >= time_start) &
-                (filtered_indices[1] <= time_end)
-        )
-        final_indices = filtered_indices[:, time_mask]
-        final_values = filtered_values[time_mask]
-
-        s1 = time.time()
-
-        # 构建 vertex_map 的张量版本
-        vertex_map = torch.zeros(vertex_indices.max() + 1, dtype=torch.long, device=device)
-        vertex_map[vertex_indices] = torch.arange(len(vertex_indices), device=device)
-
-        # 通过张量索引映射 final_indices[0]
-        final_indices[0] = vertex_map[final_indices[0]]
-
-        final_indices[1] -= time_start
-
-
-        # 构造筛选后的稀疏张量
-        result_size = (
-            len(vertex_indices), max_length, sequence_features1_matrix.size(2)
-        )
-        result_sparse_tensor = torch.sparse_coo_tensor(
-            final_indices, final_values, size=result_size, device=device
-        )
-
-        sequence_features = result_sparse_tensor.to_dense()
-
-        # 设置single_value
-        single_value = model_output_for_path(time_start, time_end, vertex_set, sequence_features)
-
-
-        # 将特征格式化为模型输入
-        sequence_features = sequence_features.to(device)
-        single_value = single_value.to(device)
-        with torch.no_grad():
-            output = model(sequence_features, single_value)
-
-        return output
-    else:
-        # 直接截取特征
-        # 先处理feature2
-        covered_nodes = []
-        sequence_features2 = torch.zeros(len(vertex_set), partition, 2, device=device)
-
-        for child_node in node.children:
-            if child_node.time_start >= time_start and child_node.time_end <= time_end:
-                covered_nodes.append(child_node)
-
-        for idx, v in enumerate(vertex_set):
-            for idx2, temp_node in enumerate(covered_nodes):
-                core_number = temp_node.vertex_core_number.get(v, 0)
-                num_neighbor = temp_node.vertex_degree[v]
-                sequence_features2[idx, idx2, 0] = core_number
-                sequence_features2[idx, idx2, 1] = num_neighbor
-
-        # 处理feature1
-
-        max_length = max_time_range_layers[node.layer_id + 1] * 2
-
-        vertex_indices = torch.tensor(vertex_set, device=device)
-        vertex_indices = torch.sort(vertex_indices).values
-
-        # 获取 indices 和 values
-        indices = sequence_features1_matrix.indices()  # (n, nnz)
-        values = sequence_features1_matrix.values()  # (nnz,)
-
-        ranges_idx = indices_vertex_of_matrix[vertex_indices]
-
-        filtered_indices = torch.cat([indices[:, start:end+1] for start, end in ranges_idx], dim=1)
-        filtered_values = torch.cat([values[start:end+1] for start, end in ranges_idx], dim=0)
-
-
-        # 构建 vertex_map 的张量版本
-        vertex_map = torch.zeros(vertex_indices.max() + 1, dtype=torch.long, device=device)
-        vertex_map[vertex_indices] = torch.arange(len(vertex_indices), device=device)
-
-        # s1 = time.time()
-        if len(covered_nodes) == 0:
-            # 筛选时间范围
-            time_mask = (
-                    (filtered_indices[1] >= time_start) &
-                    (filtered_indices[1] <= time_end)
-            )
-            final_indices = filtered_indices[:, time_mask]
-            final_values = filtered_values[time_mask]
-
-            s1 = time.time()
-            final_indices[0] = vertex_map[final_indices[0]]
-
-            final_indices[1] -= time_start
-
-            # 构造筛选后的稀疏张量
-            result_size = (
-                len(vertex_indices), max_length, sequence_features1_matrix.size(2)
-            )
-            result_sparse_tensor = torch.sparse_coo_tensor(
-                final_indices, final_values, size=result_size, device=device
-            )
-
-            sequence_features1 = result_sparse_tensor.to_dense()
-
-            single_value = model_output_for_path(time_start, time_end, vertex_set, sequence_features1)
-            s2 = time.time()
-            if len(vertex_set) > 1:
-                inter_time = inter_time + s2 - s1
-        else:
-            # 改变time mask
-            time_mask = (
-                    (filtered_indices[1] >= time_start) &
-                    (filtered_indices[1] <= time_end) & (filtered_indices[1]) < covered_nodes[0].time_start & (
-                                filtered_indices[1] > covered_nodes[-1].time_end)
-            )
-            final_indices = filtered_indices[:, time_mask]
-            final_values = filtered_values[time_mask]
-
-            s1 = time.time()
-            final_indices[0] = vertex_map[final_indices[0]]
-
-            final_indices[1] -= time_start
-
-            result_size = (
-                len(vertex_indices), max_length, sequence_features1_matrix.size(2)
-            )
-            result_sparse_tensor = torch.sparse_coo_tensor(
-                final_indices, final_values, size=result_size, device=device
-            )
-            sequence_features1 = result_sparse_tensor.to_dense()
-            s2 = time.time()
-            if len(vertex_set) > 1:
-                inter_time = inter_time + s2 - s1
-
-            # 额外构造一个张量
-            time_mask2 = (
-                    (filtered_indices[1] >= time_start) &
-                    (filtered_indices[1] <= time_end)
-            )
-            final_indices2 = filtered_indices[:, time_mask2]
-            final_values2 = filtered_values[time_mask2]
-
-            s1 = time.time()
-
-            final_indices2[0] = vertex_map[final_indices2[0]]
-
-            final_indices2[1] -= time_start
-
-            result_size2 = (
-                len(vertex_indices), time_end - time_start + 1, sequence_features1_matrix.size(2)
-            )
-            result_sparse_tensor2 = torch.sparse_coo_tensor(
-                final_indices2, final_values2, size=result_size2, device=device
-            )
-            sequence_features1_extra = result_sparse_tensor2.to_dense()
-
-            single_value = model_output_for_path(time_start, time_end, vertex_set, sequence_features1_extra)
-            s2 = time.time()
-            if len(vertex_set) > 1:
-                inter_time = inter_time + s2 - s1
-        s2 = time.time()
-        if len(vertex_set) > 1:
-            inter_time = inter_time + s2 - s1
-
-        # 将特征格式化为模型输入
-        sequence_features1 = sequence_features1.to(device)
-        sequence_features2 = sequence_features2.to(device)
-        single_value = single_value.to(device)
-        with torch.no_grad():
-            output = model(sequence_features1, sequence_features2, single_value)
-        return output
-
 
 def construct_feature_matrix():
     global sequence_features1_matrix, indices_vertex_of_matrix
@@ -754,32 +556,9 @@ def query_test():
         query_vertex = random.randint(0, num_vertex - 1)
         query_result = []
 
-        # temporal_graph_test = defaultdict(list)
-        #
-        # for v in range(num_vertex):
-        #     neighbor_set = set()
-        #     for t, neighbors in temporal_graph[v].items():
-        #         if query_time_range_start <= t <= query_time_range_end:
-        #             neighbor_set.update(neighbors)
-        #     temporal_graph_test[v] = list(neighbor_set)
-
-        # print(query_vertex, query_time_range_start, query_time_range_end)
-
-        # query_vertex = 15589
-        # query_time_range_start = 1563
-        # query_time_range_end = 1572
-        #
-        # print(query_vertex)
-        # print(query_time_range_start)
-        # print(query_time_range_end)
-
-        # t1 = time.time()
+        
         query_vertex_core_number = model_out_put_for_any_range_vertex_set([query_vertex], query_time_range_start, query_time_range_end)
-        # t2 = time.time()
-        # print("query_vertex_core_number:", query_vertex_core_number)
-        # print("query_vertex_core_number.shape:", query_vertex_core_number.shape)
-        # print("query_vertex_core_number.device:", query_vertex_core_number.device)
-
+        
         if query_vertex_core_number.item() < 10:
             print("The query vertex is not a core vertex.")
             # print(query_vertex_core_number)
@@ -796,44 +575,12 @@ def query_test():
         vertex_visited[query_vertex] = True
         candidate_vertices = [query_vertex]
 
-        # # search the vertices one by one using the tree
-        # node = tree_query(query_time_range_start, query_time_range_end)
-        # start_time = time.time()
-        # vertex_queue.append(query_vertex)
-        # while len(vertex_queue) > 0:
-        #     temp_vertex = vertex_queue.popleft()
-        #     temp_vertex_core_number = model_out_put_for_any_range_single_vertex(temp_vertex, query_time_range_start, query_time_range_end)
-        #     vertex_visited[temp_vertex] = True
-        #     if temp_vertex_core_number >= query_vertex_core_number:
-        #         query_result.append(temp_vertex)
-        #         for neighbor in temporal_graph_test[temp_vertex]:
-        #             if not vertex_visited[neighbor]:
-        #                 vertex_queue.append(neighbor)
-        #                 vertex_visited[neighbor] = True
-        #         # for t in node.vertex_timestamp[temp_vertex]:
-        #         #     if query_time_range_start <= t <= query_time_range_end:
-        #         #         for neighbor in temporal_graph[temp_vertex][t]:
-        #         #             if neighbor not in vertex_visited:
-        #         #                 vertex_queue.append(neighbor)
-        #         #                 vertex_visited[neighbor] = True
-        # end_time = time.time()
-        # total_query_time += end_time - start_time
-        # print(f"Search time: {end_time - start_time:.4f} s")
-        # print(f"Result number: {len(query_result)}")
-        # print(f"Query result: {query_result}")
-
         # 预处理：读取存在树节点中的邻居信息
         start_time = time.time()
         current_node = tree_query(query_time_range_start, query_time_range_end)
         vertex_queue.append((query_vertex, 0))
         hop_num = 6
-        # covered_nodes = []
-        # for child_node in node.children:
-        #     if child_node.time_start >= query_time_range_start and child_node.time_end <= query_time_range_end:
-        #         covered_nodes.append(child_node)
-        # covered_range = (-1, -1)
-        # if len(covered_nodes) > 0:
-        #     covered_range = (covered_nodes[0].time_start, covered_nodes[-1].time_end)
+        
         while len(vertex_queue) > 0:
             (temp_vertex, temp_hop) = vertex_queue.popleft()
             temp_vertex = int(temp_vertex)
@@ -852,38 +599,6 @@ def query_test():
                         if not vertex_visited[neighbor] and neighbor_core_number >= query_vertex_core_number:
                             vertex_queue.append((neighbor, temp_hop + 1))
                             vertex_visited[neighbor] = True
-            # temporal_graph_test[temp_vertex] = list(neighbor_set)
-
-            # if temp_vertex == query_vertex or (
-            #         temp_vertex != query_vertex and len(temporal_graph_test[temp_vertex]) >= query_vertex_core_number):
-            #     candidate_vertices.append(temp_vertex)
-            #     # 处理未访问的邻居节点
-            #     for neighbor in temporal_graph_test[temp_vertex]:
-            #         if not vertex_visited[neighbor]:
-            #             vertex_queue.append((neighbor, temp_hop + 1))
-            #             vertex_visited[neighbor] = True
-
-            # neighbor_set = set()
-            # for temp_node in covered_nodes:
-            #     neighbor_set.update(temp_node.precomputed_neighbors[temp_vertex])
-            # for t in node.vertex_timestamp[temp_vertex]:
-            #     if query_time_range_start <= t <= query_time_range_end and (len(covered_nodes) == 0 or (t < covered_range[0] or t > covered_range[1])):
-            #         neighbor_set.update(temporal_graph[temp_vertex][t])
-            #
-            # if temp_vertex == query_vertex or (
-            #         temp_vertex != query_vertex and len(neighbor_set) >= query_vertex_core_number):
-            #     candidate_vertices.append(temp_vertex)
-            #     candidate_vertices_degree_projection[temp_vertex] = len(neighbor_set)
-            #     candidate_vertices_neighbor_projection[temp_vertex] = neighbor_set
-            #
-            #     # 处理未访问的邻居节点
-            #     for neighbor in neighbor_set:
-            #         if not vertex_visited[neighbor]:
-            #             vertex_queue.append((neighbor, temp_hop + 1))
-            #             vertex_visited[neighbor] = True
-        # 分析性能
-        # profiler = cProfile.Profile()
-        # profiler.enable()
 
         s11 = time.time()
         model_out_put_for_any_range_vertex_set(candidate_vertices, query_time_range_start, query_time_range_end)
@@ -901,7 +616,6 @@ def query_test():
         total_query_time += end_time - start_time
 
 
-
     print("Query test finished.")
     if valid_query_num != 0:
         average_query_time = total_query_time / valid_query_num
@@ -914,177 +628,7 @@ def query_test():
         print(f"Total query time: {total_query_time} s")
     # print(f"Average prediction time: {total_prediction_time / valid_query_num:.4f} s")
 
-def query_for_single(query_vertex, query_time_range_start, query_time_range_end):
-    global temporal_graph_test, inter_time
-    print("Query test...")
 
-    total_query_time = 0.0
-    total_prediction_time = 0.0
-    valid_query_num = 0
-    total_result_num = 0.0
-   
-    query_result = []
-
-    # temporal_graph_test = defaultdict(list)
-    #
-    # for v in range(num_vertex):
-    #     neighbor_set = set()
-    #     for t, neighbors in temporal_graph[v].items():
-    #         if query_time_range_start <= t <= query_time_range_end:
-    #             neighbor_set.update(neighbors)
-    #     temporal_graph_test[v] = list(neighbor_set)
-
-    # print(query_vertex, query_time_range_start, query_time_range_end)
-
-    # query_vertex = 15589
-    # query_time_range_start = 1563
-    # query_time_range_end = 1572
-    #
-    # print(query_vertex)
-    # print(query_time_range_start)
-    # print(query_time_range_end)
-
-    # t1 = time.time()
-    query_vertex_core_number = model_out_put_for_any_range_vertex_set([query_vertex], query_time_range_start, query_time_range_end)
-    # t2 = time.time()
-    # print("query_vertex_core_number:", query_vertex_core_number)
-    # print("query_vertex_core_number.shape:", query_vertex_core_number.shape)
-    # print("query_vertex_core_number.device:", query_vertex_core_number.device)
-
-    if query_vertex_core_number.item() < 10:
-        print("The query vertex is not a core vertex.")
-        # print(query_vertex_core_number)
-        # print(t2 - t1)
-        return 
-    valid_query_num = valid_query_num + 1
-    print(f"Query Vertex: {query_vertex}, Core Number: {query_vertex_core_number}")
-    print(f"Query: {query_time_range_start} - {query_time_range_end}")
-
-    # precompute
-    vertex_visited = np.zeros(num_vertex, dtype=bool)
-    vertex_queue = deque()
-    # vertex_queue.append(query_vertex)
-    vertex_visited[query_vertex] = True
-    candidate_vertices = [query_vertex]
-
-    # # search the vertices one by one using the tree
-    # node = tree_query(query_time_range_start, query_time_range_end)
-    # start_time = time.time()
-    # vertex_queue.append(query_vertex)
-    # while len(vertex_queue) > 0:
-    #     temp_vertex = vertex_queue.popleft()
-    #     temp_vertex_core_number = model_out_put_for_any_range_single_vertex(temp_vertex, query_time_range_start, query_time_range_end)
-    #     vertex_visited[temp_vertex] = True
-    #     if temp_vertex_core_number >= query_vertex_core_number:
-    #         query_result.append(temp_vertex)
-    #         for neighbor in temporal_graph_test[temp_vertex]:
-    #             if not vertex_visited[neighbor]:
-    #                 vertex_queue.append(neighbor)
-    #                 vertex_visited[neighbor] = True
-    #         # for t in node.vertex_timestamp[temp_vertex]:
-    #         #     if query_time_range_start <= t <= query_time_range_end:
-    #         #         for neighbor in temporal_graph[temp_vertex][t]:
-    #         #             if neighbor not in vertex_visited:
-    #         #                 vertex_queue.append(neighbor)
-    #         #                 vertex_visited[neighbor] = True
-    # end_time = time.time()
-    # total_query_time += end_time - start_time
-    # print(f"Search time: {end_time - start_time:.4f} s")
-    # print(f"Result number: {len(query_result)}")
-    # print(f"Query result: {query_result}")
-
-    # 预处理：读取存在树节点中的邻居信息
-    start_time = time.time()
-    current_node = tree_query(query_time_range_start, query_time_range_end)
-    vertex_queue.append((query_vertex, 0))
-    hop_num = 6
-    # covered_nodes = []
-    # for child_node in node.children:
-    #     if child_node.time_start >= query_time_range_start and child_node.time_end <= query_time_range_end:
-    #         covered_nodes.append(child_node)
-    # covered_range = (-1, -1)
-    # if len(covered_nodes) > 0:
-    #     covered_range = (covered_nodes[0].time_start, covered_nodes[-1].time_end)
-    while len(vertex_queue) > 0:
-        (temp_vertex, temp_hop) = vertex_queue.popleft()
-        temp_vertex = int(temp_vertex)
-        if temp_hop > hop_num:
-            continue
-        vertex_visited[temp_vertex] = True
-
-        candidate_vertices.append(temp_vertex)
-        # 处理未访问的邻居节点
-        # neighbor_set = set()
-        for t, neighbors in temporal_graph[temp_vertex].items():
-            if query_time_range_start <= t <= query_time_range_end:
-                # neighbor_set.update(neighbors)
-                for neighbor in neighbors:
-                    neighbor_core_number = current_node.vertex_degree.get(neighbor, 0)
-                    if not vertex_visited[neighbor] and neighbor_core_number >= query_vertex_core_number:
-                        vertex_queue.append((neighbor, temp_hop + 1))
-                        vertex_visited[neighbor] = True
-        # temporal_graph_test[temp_vertex] = list(neighbor_set)
-
-        # if temp_vertex == query_vertex or (
-        #         temp_vertex != query_vertex and len(temporal_graph_test[temp_vertex]) >= query_vertex_core_number):
-        #     candidate_vertices.append(temp_vertex)
-        #     # 处理未访问的邻居节点
-        #     for neighbor in temporal_graph_test[temp_vertex]:
-        #         if not vertex_visited[neighbor]:
-        #             vertex_queue.append((neighbor, temp_hop + 1))
-        #             vertex_visited[neighbor] = True
-
-        # neighbor_set = set()
-        # for temp_node in covered_nodes:
-        #     neighbor_set.update(temp_node.precomputed_neighbors[temp_vertex])
-        # for t in node.vertex_timestamp[temp_vertex]:
-        #     if query_time_range_start <= t <= query_time_range_end and (len(covered_nodes) == 0 or (t < covered_range[0] or t > covered_range[1])):
-        #         neighbor_set.update(temporal_graph[temp_vertex][t])
-        #
-        # if temp_vertex == query_vertex or (
-        #         temp_vertex != query_vertex and len(neighbor_set) >= query_vertex_core_number):
-        #     candidate_vertices.append(temp_vertex)
-        #     candidate_vertices_degree_projection[temp_vertex] = len(neighbor_set)
-        #     candidate_vertices_neighbor_projection[temp_vertex] = neighbor_set
-        #
-        #     # 处理未访问的邻居节点
-        #     for neighbor in neighbor_set:
-        #         if not vertex_visited[neighbor]:
-        #             vertex_queue.append((neighbor, temp_hop + 1))
-        #             vertex_visited[neighbor] = True
-    # 分析性能
-    # profiler = cProfile.Profile()
-    # profiler.enable()
-
-    s11 = time.time()
-    model_out_put_for_any_range_vertex_set(candidate_vertices, query_time_range_start, query_time_range_end)
-    # model_out_put_for_any_range_vertex_set_with_index(candidate_vertices, query_time_range_start, query_time_range_end)
-    s22 = time. time()
-    inter_time = inter_time + s22 - s11
-
-    # profiler.disable()
-    # profiler.print_stats(sort="time")  # 根据时间排序输出剖析结果
-
-    end_time = time.time()
-    print(len(candidate_vertices))
-    # print(candidate_vertices_core_numbers)
-    total_result_num += len(candidate_vertices)
-    total_query_time += end_time - start_time
-
-
-
-    print("Query test finished.")
-    if valid_query_num != 0:
-        average_query_time = total_query_time / valid_query_num
-        average_inter_time = inter_time / valid_query_num
-        print(f"Average query time: {total_query_time / valid_query_num:.4f} s")
-        print(f"Average Inter time: {inter_time / valid_query_num:.4f} s")
-        print(average_inter_time / average_query_time)
-        print(f"Average result number: {total_result_num / valid_query_num:.4f}")
-    else:
-        print(f"Total query time: {total_query_time} s")
-    # print(f"Average prediction time: {total_prediction_time / valid_query_num:.4f} s")
-# 主函数
 def main():
     # # trace memory usage
     # tracemalloc.start()

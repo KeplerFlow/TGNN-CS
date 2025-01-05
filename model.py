@@ -238,9 +238,9 @@ class Adapter(nn.Module):
 
         # 注意：由于是频域信息，可以考虑使用不同的融合策略
         # 方案 1: 仍然使用简单的线性融合层
-        self.fusion = nn.Linear(adapter_dim * 2, adapter_dim)
+        # self.fusion = nn.Linear(adapter_dim * 2, adapter_dim)
         # 方案 2: 使用更复杂的融合策略，例如注意力机制 (下面提供示例代码)
-        # self.fusion = TimeAttentionFusion(adapter_dim)  # 下面提供了该模块的实现代码
+        self.fusion = TimeAttentionFusion(adapter_dim)  # 下面提供了该模块的实现代码
 
     def forward(self, x, edge_index, edge_attr):
         # 1. 处理节点特征
