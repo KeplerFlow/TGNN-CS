@@ -85,12 +85,12 @@ def main():
     edge_dim = 8
     learning_rate = 0.001
     epochs = 3
-    batch_size = 16
+    batch_size = 4
     k_hop = 5
     positive_hop = 3
     alpha = 0.1
     num_time_range_samples = 10
-    num_anchor_samples = 100
+    num_anchor_samples = 10
     test_result_list = []
 
     num_vertex, num_edge, num_timestamp, time_edge, temporal_graph, temporal_graph_pyg = read_temporal_graph(dataset_name,device)
@@ -103,13 +103,17 @@ def main():
     
     sequence_features1_matrix = construct_feature_matrix(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
     
-    # sequence_features_matrix_tree, indices_vertex_of_matrix = construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
+    #####################
 
     # root, max_layer_id = build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers)
 
     # load_models(0, time_range_layers, max_layer_id, device, dataset_name, 
     #             max_time_range_layers, partition,root,num_timestamp)
-    
+
+    # sequence_features_matrix_tree, indices_vertex_of_matrix = construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
+
+    ######################
+
     model = AdapterTemporalGNN(node_in_channels, node_out_channels, edge_dim=edge_dim).to(device)
     
     train_time_range_list = []
@@ -379,11 +383,10 @@ def main():
             test_time_range_list.append((t_start, t_end))
     temporal_density_ratio = 0
     temporal_conductance_ratio = 0
-    num_anchor_samples = 10
     valid_cnt = 0
     total_time = 0
     result_len = 0
-    epochs = 2
+    epochs=5
 
     for t_start, t_end in test_time_range_list:
         print(f"Test time range: [{t_start}, {t_end}]")
@@ -545,11 +548,13 @@ def main():
                 timing_percentages = {
                     k: (v / epoch_total_time) * 100 for k, v in timing_info.items()
                 }
-                print(f"epoch_total_time: {epoch_total_time} ")
+                if epoch == 0:
+                    print(f"epoch_total_time: {epoch_total_time}s")
+                    print("耗时占比:")
+                    for name, percentage in timing_percentages.items():
+                        print(f"  {name}: {percentage:.2f}%")
                 print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss / len(train_loader):.4f}", end=' ')
-                print("耗时占比:")
-                for name, percentage in timing_percentages.items():
-                    print(f"  {name}: {percentage:.2f}%")
+                
 
             # 评估阶段
             model.eval()
@@ -615,6 +620,5 @@ def main():
 
 
 if __name__ == "__main__":
-    cProfile.run('main()')
-    # torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
     main()

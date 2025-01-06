@@ -9,6 +9,8 @@ from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.nn.inits import glorot, zeros
 from torch_geometric.nn import GATConv, BatchNorm
 from torch_scatter import scatter_mean  # 新添加的导入
+from torch_scatter import scatter_softmax
+
 
 from torch_geometric.typing import (
     Adj,
@@ -221,75 +223,84 @@ class AdapterTemporalGNN(nn.Module):
     
 class Adapter(nn.Module):
     """
-    对输入做轻量级映射，结合时间信息(傅里叶变换后的时间戳)，并通过残差方式加回
+    内存优化版本的Adapter，使用高效的局部注意力机制
     """
     def __init__(self, in_channels, adapter_dim, edge_dim):
         super(Adapter, self).__init__()
-
+        
         self.down = nn.Linear(in_channels, adapter_dim)
         self.activation = nn.ReLU()
         self.up = nn.Linear(adapter_dim, in_channels)
-
-        # 时间信息处理 (针对傅里叶变换后的特征)
+        
+        # 时间信息处理
         self.time_proj = nn.Sequential(
             nn.Linear(edge_dim, adapter_dim),
             nn.ReLU()
         )
-
-        # 注意：由于是频域信息，可以考虑使用不同的融合策略
-        # 方案 1: 仍然使用简单的线性融合层
-        # self.fusion = nn.Linear(adapter_dim * 2, adapter_dim)
-        # 方案 2: 使用更复杂的融合策略，例如注意力机制 (下面提供示例代码)
-        self.fusion = TimeAttentionFusion(adapter_dim)  # 下面提供了该模块的实现代码
-
+        
+        # 高效的注意力融合模块
+        self.efficient_fusion = EfficientTimeAttention(adapter_dim)
+        
     def forward(self, x, edge_index, edge_attr):
-        # 1. 处理节点特征
+        # 1. 节点特征下投影
         node_feat = self.down(x)
         node_feat = self.activation(node_feat)
-
-        # 2. 处理时间特征 (已经是频域特征)
-        time_feat = self.time_proj(edge_attr)  # [num_edges, adapter_dim]
-
-        # 3. 聚合时间信息到节点
-        node_time_feat = scatter_mean(
-            time_feat,
-            edge_index[0],  # 使用源节点进行聚合
-            dim=0,
-            dim_size=x.size(0)
-        )  # [num_nodes, adapter_dim]
-
-        # 4. 融合节点特征和时间特征
-        combined = torch.cat([node_feat, node_time_feat], dim=-1)
-        fused = self.fusion(combined)
-        fused = self.activation(fused)
         
-        # 5. 最终映射和残差连接
+        # 2. 处理时间特征
+        time_feat = self.time_proj(edge_attr)  # [num_edges, adapter_dim]
+        
+        # 3. 使用高效注意力融合
+        fused = self.efficient_fusion(
+            node_feat,      # [num_nodes, adapter_dim]
+            time_feat,      # [num_edges, adapter_dim]
+            edge_index,     # [2, num_edges]
+        )
+        
+        # 4. 上投影并添加残差连接
         out = self.up(fused)
         return x + out
 
-# 方案 2 的补充：使用注意力机制进行融合 (可选)
-class TimeAttentionFusion(nn.Module):
+class EfficientTimeAttention(nn.Module):
+    """
+    基于边的高效注意力实现，避免构建完整的注意力矩阵
+    """
     def __init__(self, adapter_dim):
-        super(TimeAttentionFusion, self).__init__()
+        super(EfficientTimeAttention, self).__init__()
         self.query = nn.Linear(adapter_dim, adapter_dim)
         self.key = nn.Linear(adapter_dim, adapter_dim)
         self.value = nn.Linear(adapter_dim, adapter_dim)
-        self.softmax = nn.Softmax(dim=-1)
-        self.out = nn.Linear(adapter_dim, adapter_dim)
-
-    def forward(self, combined):
-        node_feat = combined[:, :combined.shape[1] // 2]
-        node_time_feat = combined[:, combined.shape[1] // 2:]
-
-        q = self.query(node_feat)
-        k = self.key(node_time_feat)
-        v = self.value(node_time_feat)
-
-        attn_weights = self.softmax(q @ k.transpose(-2, -1) / (k.size(-1) ** 0.5))  # Scaled dot-product attention
-        attn_output = attn_weights @ v
+        self.activation = nn.ReLU()
+        self.scaling = adapter_dim ** -0.5
+        self.out_proj = nn.Linear(adapter_dim, adapter_dim)
         
-        fused = self.out(attn_output)
-        return fused
+    def forward(self, node_feat, time_feat, edge_index):
+        # 1. 计算查询、键、值
+        q = self.query(node_feat)                    # [num_nodes, dim]
+        k = self.key(time_feat)                      # [num_edges, dim]
+        v = self.value(time_feat)                    # [num_edges, dim]
+        
+        # 2. 获取源节点特征
+        src_idx = edge_index[0]
+        q_i = q[src_idx]                            # [num_edges, dim]
+        
+        # 3. 计算注意力分数 (在边上)
+        attn_edge = (q_i * k).sum(dim=-1) * self.scaling  # [num_edges]
+        
+        # 4. 对每个节点的相邻边进行softmax
+        attn_weights = scatter_softmax(attn_edge, src_idx, dim=0)  # [num_edges]
+        
+        # 5. 加权聚合
+        weighted_values = v * attn_weights.unsqueeze(-1)   # [num_edges, dim]
+        aggregated = scatter_mean(
+            weighted_values,
+            src_idx,
+            dim=0,
+            dim_size=node_feat.size(0)
+        )  # [num_nodes, dim]
+        
+        # 6. 最终投影
+        out = self.out_proj(aggregated)
+        return self.activation(out)
       
 # 时态信息-特征拼接-再计算注意力系数
 class GATWithEdgeChannelAttention(MessagePassing):
