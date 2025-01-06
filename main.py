@@ -36,6 +36,7 @@ from loss import *
 from extract_subgraph import *
 from train import *
 from query import *
+from index import *
 
 import cProfile
 
@@ -105,12 +106,30 @@ def main():
     
     #####################
 
-    # root, max_layer_id = build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers)
+    root, max_layer_id = build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers)
 
-    # load_models(0, time_range_layers, max_layer_id, device, dataset_name, 
-    #             max_time_range_layers, partition,root,num_timestamp)
+    load_models(0, time_range_layers, max_layer_id, device, dataset_name, 
+                max_time_range_layers, partition,root,num_timestamp)
 
-    # sequence_features_matrix_tree, indices_vertex_of_matrix = construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
+    sequence_features_matrix_tree, indices_vertex_of_matrix = construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
+
+    query_time_range_start = random.randint(0, num_timestamp-1)
+    query_time_range_end = random.randint(query_time_range_start, min(num_timestamp-1, query_time_range_start + 100))
+    query_vertex = random.randint(0, num_vertex - 1)
+
+    query_vertex_core_number = model_out_put_for_any_range_vertex_set(
+        [query_vertex], query_time_range_start, query_time_range_end,
+        max_layer_id,
+        max_time_range_layers,
+        device,
+        sequence_features_matrix_tree,
+        partition,
+        num_timestamp, 
+        root
+    )
+    print(f"query_vertex: {query_vertex}")
+
+    print(f"query_vertex_core_number:{query_vertex_core_number}")
 
     ######################
 

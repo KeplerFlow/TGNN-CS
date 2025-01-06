@@ -343,8 +343,7 @@ def build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph
                     child_node = TreeNode((temp_time_start, temp_time_end), current_node.layer_id + 1)
                     current_node.add_child(child_node)
                     node_stack.append(child_node)
-                    max_layer_id = max(max_layer_id, current_node.layer_id + 1) # Update max_layer_id locally
-
+    max_layer_id = len(time_range_layers) - 1
     return root_node, max_layer_id
 
 def tree_query(time_start, time_end, num_timestamp, root, max_layer_id):
@@ -404,6 +403,7 @@ def model_output_for_path(time_start, time_end, vertex_set, sequence_features,
     path.pop()
     output = torch.zeros(len(vertex_set), 1, dtype=torch.float32, device=device)
     sequence_input1 = torch.zeros(len(vertex_set), max_time_range_layers[0], 2, device=device)
+    # sequence_features = sequence_features.to_dense()  # 添加这一行以确保是稠密张量
     sequence_input1[:, 0:sequence_features.shape[1], :] = sequence_features
     for node in path:
         max_length1 = max_time_range_layers[node.layer_id + 1] * 2

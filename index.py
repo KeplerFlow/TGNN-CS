@@ -11,11 +11,12 @@ def model_out_put_for_any_range_vertex_set(
     device,
     sequence_features1_matrix,
     partition,
-    inter_time
+    num_timestamp, 
+    root
 ):
     # 直接用tensor
     # inter_time  # 假设不再需要这个变量，或者它应该从其他地方传入或计算
-    node = tree_query(time_start, time_end)
+    node = tree_query(time_start, time_end,num_timestamp, root, max_layer_id)
     if node is None:
         print("Error: node not found.")
         return torch.zeros(len(vertex_set), device=device)  # 确保返回的 tensor 在正确的设备上
@@ -75,7 +76,8 @@ def model_out_put_for_any_range_vertex_set(
         sequence_features = result_sparse_tensor.to_dense()
 
         # 设置single_value
-        single_value = model_output_for_path(time_start, time_end, vertex_set, sequence_features, device=device)
+        single_value = model_output_for_path(time_start, time_end, vertex_set, sequence_features, 
+                          num_timestamp, root, max_layer_id, device, max_time_range_layers, partition)
 
         # 将特征格式化为模型输入
         sequence_features = sequence_features.to(device)
@@ -155,7 +157,8 @@ def model_out_put_for_any_range_vertex_set(
 
             sequence_features1 = result_sparse_tensor.to_dense()
 
-            single_value = model_output_for_path(time_start, time_end, vertex_set, sequence_features1, device=device)
+            single_value = model_output_for_path(time_start, time_end, vertex_set, sequence_features1_matrix, 
+                          num_timestamp, root, max_layer_id, device, max_time_range_layers, partition)
         else:
             # 改变time mask
             time_mask = (
@@ -195,7 +198,8 @@ def model_out_put_for_any_range_vertex_set(
             )
             sequence_features1_extra = result_sparse_tensor2.to_dense()
 
-            single_value = model_output_for_path(time_start, time_end, vertex_set, sequence_features1_extra, device=device)
+            single_value = model_output_for_path(time_start, time_end, vertex_set, sequence_features1_extra, 
+                          num_timestamp, root, max_layer_id, device, max_time_range_layers, partition)
             # single_value = torch.zeros(len(vertex_set), 1, device=device)
 
         # 将特征格式化为模型输入
