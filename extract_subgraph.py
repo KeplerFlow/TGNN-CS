@@ -8,6 +8,7 @@ import heapq
 import numpy as np
 
 from utils import *
+from index import *
 
 def get_samples(center_vertex, k, t_start, t_end, filtered_temporal_graph, vertex_connect_scores, total_edge_weight, time_range_core_number, subgraph_k_hop_cache):
 
@@ -75,6 +76,44 @@ def generate_time_range_link_samples(k_hop_samples, filtered_temporal_graph, num
         return selected_samples
     return link_samples_dict
 
+def get_samples_index(center_vertex, k, t_start, t_end, filtered_temporal_graph, vertex_connect_scores, total_edge_weight, time_range_core_number, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root):
+
+    candidates_neighbors = get_candidate_neighbors_index(center_vertex, k, t_start, t_end, filtered_temporal_graph, total_edge_weight, time_range_core_number, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+    # print(f"K-hop Neighbors: {len(candidates_neighbors)}")
+    
+    positive_neighbors_list = []
+    positive_neighbors = set()
+    hard_negative_neighbors = set()
+    visited = set()
+    visited.add(center_vertex)
+    queue = []  # 优先队列
+    heapq.heappush(queue, (0, center_vertex))
+    query_vertex_core_number = time_range_core_number[(t_start, t_end)].get(center_vertex, 0)
+    # query_vertex_core_number = model_out_put_for_any_range_vertex_set([center_vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+
+    while queue:
+        _, top_vertex = heapq.heappop(queue)
+        v_core_number = time_range_core_number[(t_start, t_end)].get(top_vertex, 0)
+        # v_core_number = model_out_put_for_any_range_vertex_set([top_vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+
+        if v_core_number >= query_vertex_core_number:
+            hard_negative_neighbors.add(top_vertex)
+        positive_neighbors_list.append(top_vertex)
+        if top_vertex in filtered_temporal_graph:
+            for (neighbor, edge_count, neighbor_core_number) in filtered_temporal_graph[top_vertex]:
+                if neighbor not in visited and neighbor in candidates_neighbors:
+                    heapq.heappush(queue, (-vertex_connect_scores[neighbor], neighbor))
+                    visited.add(neighbor)
+
+    while len(positive_neighbors) < len(hard_negative_neighbors) * 0.3:
+        left_vertex = positive_neighbors_list.pop(0)
+        if left_vertex != center_vertex:
+            positive_neighbors.add(left_vertex)
+    hard_negative_neighbors = hard_negative_neighbors - positive_neighbors - {center_vertex}
+    subgraph_k_hop_cache[(center_vertex, (t_start, t_end))] = sorted(candidates_neighbors)
+    
+    return positive_neighbors, hard_negative_neighbors, candidates_neighbors 
+
 def generate_triplets(center_vertices, k_hop, t_start, t_end, num_vertex, temporal_graph, time_range_core_number, time_range_link_samples_cache, subgraph_k_hop_cache):
     triplets = []
     idx = 0
@@ -111,6 +150,69 @@ def generate_triplets(center_vertices, k_hop, t_start, t_end, num_vertex, tempor
         # 找到 k 跳邻居作为正样本
         positive_samples, hard_negative_samples, k_hop_samples = get_samples(anchor, k_hop, t_start, t_end,
                                                                              filtered_subgraph, vertex_connect_scores, total_edge_weight, time_range_core_number, subgraph_k_hop_cache)
+        if len(positive_samples) == 0:
+            continue
+        # 提取负样本
+        easy_negative_samples = random.choices(
+            list(k_hop_samples - positive_samples - hard_negative_samples - {anchor}),
+            k=min(int(len(positive_samples) * 0.8), len(k_hop_samples - positive_samples - hard_negative_samples - {anchor})))
+        hard_negative_samples = random.choices(list(hard_negative_samples),
+                                               k=min(int(len(positive_samples) - len(easy_negative_samples)),
+                                                     len(hard_negative_samples)))
+        negative_samples = hard_negative_samples + easy_negative_samples
+
+        if len(positive_samples) == 0 or len(negative_samples) == 0:
+            continue
+
+        # 生成三元组
+        triplets.append((anchor, list(positive_samples), list(negative_samples)))
+
+        # 生成link loss三元组
+        link_samples = generate_time_range_link_samples(k_hop_samples, filtered_subgraph, num_vertex)
+        time_range_link_samples_cache[(t_start, t_end)][anchor] = link_samples
+
+    return triplets
+
+def generate_triplets_index(center_vertices, k_hop, t_start, t_end, num_vertex, temporal_graph, time_range_core_number, time_range_link_samples_cache, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root):
+    triplets = []
+    idx = 0
+
+    # generate filtered subgraph
+    filtered_subgraph = {}
+    vertex_connect_scores = {}
+    total_edge_weight = 0
+    for vertex in range(num_vertex):
+        neighbor_time_edge_count = defaultdict(int)
+        total_time_edge_count = 0
+        if vertex in temporal_graph:
+           for t, neighbors in temporal_graph[vertex].items():
+              if t_start <= t <= t_end:
+                for neighbor in neighbors:
+                    neighbor_time_edge_count[neighbor] += 1
+                    total_time_edge_count += 1
+        neighbors_list = []
+        for neighbor, count in neighbor_time_edge_count.items():
+            core_number = time_range_core_number[(t_start, t_end)].get(neighbor, 0)
+            # core_number = model_out_put_for_any_range_vertex_set([neighbor],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+
+            neighbors_list.append((neighbor, count, core_number))
+            if vertex < neighbor:
+                total_edge_weight += count
+        filtered_subgraph[vertex] = neighbors_list
+        vertex_core_number = time_range_core_number[(t_start, t_end)].get(vertex, 0)
+        # vertex_core_number = model_out_put_for_any_range_vertex_set([vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+
+        vertex_connect_scores[vertex] = vertex_core_number * total_time_edge_count / len(neighbors_list) if len(
+            neighbors_list) != 0 else 0
+
+    # 原图编号
+    for anchor in center_vertices:
+        if idx % 100 == 0:
+            print(f"{idx}/{len(center_vertices)}")
+        idx = idx + 1
+        # 找到 k 跳邻居作为正样本
+        positive_samples, hard_negative_samples, k_hop_samples = get_samples_index(anchor, k_hop, t_start, t_end,
+                                                                             filtered_subgraph, vertex_connect_scores, total_edge_weight, time_range_core_number, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
         if len(positive_samples) == 0:
             continue
         # 提取负样本
@@ -294,8 +396,10 @@ def extract_subgraph(anchor, t_start, t_end, k, feature_dim, temporal_graph, tem
     )
     return subgraph_pyg, vertex_map, neighbors_k_hop
 
-def extract_subgraph_multiple_query(query_vertex, t_start, t_end, k, feature_dim, temporal_graph, temporal_graph_pyg, 
-                    num_vertex, edge_dim, vertex_features, time_range_core_number, device):
+def extract_subgraph_multiple_query(query_vertex, t_start, t_end, k, feature_dim, temporal_graph,
+                                                                        temporal_graph_pyg, num_vertex, edge_dim,
+                                                                        sequence_features1_matrix,
+                                                                        time_range_core_number, max_layer_id,max_time_range_layers,device,partition,num_timestamp, root):
     # 确保 query_vertex 是张量类型
     if not isinstance(query_vertex, torch.Tensor):
         query_vertex = torch.tensor(query_vertex, device=device)
@@ -359,7 +463,7 @@ def extract_subgraph_multiple_query(query_vertex, t_start, t_end, k, feature_dim
     
     # 构建子图 Data 对象
     subgraph_pyg = Data(
-        x=init_vertex_features(t_start, t_end, neighbors_k_hop, feature_dim, -1, vertex_features, time_range_core_number, device),
+        x=init_vertex_features_index(t_start, t_end, neighbors_k_hop, feature_dim, -1, sequence_features1_matrix, time_range_core_number,max_layer_id,max_time_range_layers,device,partition,num_timestamp, root),
         edge_index=sub_edge_index,
         edge_attr=sub_edge_attr,
         device=device

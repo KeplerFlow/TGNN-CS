@@ -106,16 +106,15 @@ def main():
     
     #####################
 
-    # root,max_layer_id = build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers)
+    root,max_layer_id = build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers)
 
-    # load_models(0, time_range_layers, max_layer_id, device, dataset_name, 
-    #             max_time_range_layers, partition,root,num_timestamp)
+    load_models(len(time_range_layers), time_range_layers, max_layer_id, device, dataset_name, 
+                max_time_range_layers, partition,root,num_timestamp)
 
-    # sequence_features1_matrix = construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
-
-    # query_time_range_start = 1700#random.randint(0, num_timestamp-1)
+    # 以下注释代码用于测试集成的索引预测core
+    # query_time_range_start = random.randint(0, num_timestamp-1)
     # query_time_range_end = random.randint(query_time_range_start, min(num_timestamp-1, query_time_range_start + 100))
-    # query_vertex = 4213#random.randint(0, num_vertex - 1)
+    # query_vertex = random.randint(0, num_vertex - 1)
     
     # print(f"query_vertex: {query_vertex}")
     # print(f"query_time_range_start: {query_time_range_start}")
@@ -388,8 +387,6 @@ def main():
     )
     scaler = GradScaler()  # 混合精度训练
 
-    sequence_features2_matrix = construct_feature_matrix(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
-
     test_time_range_list = []
     while len(test_time_range_list) < 10:
         t_layer = random.randint(1, len(time_range_layers) - 2)
@@ -412,9 +409,14 @@ def main():
         while len(query_vertex_list) < 10:
             query_vertex = random.choice(range(num_vertex))
             core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
+            # core_number = model_out_put_for_any_range_vertex_set([query_vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+
+            # print(f"core_number:{core_number},core_number_index:{core_number_index}")
+
             while core_number < 5:
                 query_vertex = random.choice(range(num_vertex))
                 core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
+                # core_number = model_out_put_for_any_range_vertex_set([query_vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
             query_vertex_list.add(query_vertex)
 
         for query_vertex in query_vertex_list:
@@ -425,15 +427,17 @@ def main():
             query_vertex_neighbor=0
             while core_number<5:
                 query_vertex_neighbor = random.choice(list(temporal_graph[query_vertex]))
-                core_number = time_range_core_number[(t_start, t_end)].get(query_vertex_neighbor,0)
+                core_number = time_range_core_number[(t_start, t_end)].get(query_vertex_neighbor, 0)
+                # core_number = model_out_put_for_any_range_vertex_set([query_vertex_neighbor],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+
 
             # 为查询节点生成训练数据
             center_vertices = set()
             center_vertices.add(query_vertex)
             center_vertices.add(query_vertex_neighbor)
 
-            triplets = generate_triplets(center_vertices, k_hop, t_start, t_end, num_vertex, temporal_graph,
-                                        time_range_core_number, time_range_link_samples_cache, subgraph_k_hop_cache)
+            triplets = generate_triplets_index(center_vertices, k_hop, t_start, t_end, num_vertex, temporal_graph,
+                                        time_range_core_number, time_range_link_samples_cache, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
             quadruplet = [(t[0], t[1], t[2], (t_start, t_end)) for t in triplets]
 
             # 创建数据加载器
@@ -448,8 +452,8 @@ def main():
                 subgraph, vertex_map, neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
                                                                         feature_dim, temporal_graph,
                                                                         temporal_graph_pyg, num_vertex, edge_dim,
-                                                                        sequence_features2_matrix,
-                                                                        time_range_core_number, device)
+                                                                        sequence_features1_matrix,
+                                                                        time_range_core_number, max_layer_id,max_time_range_layers,device,partition,num_timestamp, root)
                 if subgraph is not None and vertex_map is not None and query_vertex in vertex_map:
                     embeddings = model(subgraph.to(device))
                     query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)
@@ -477,8 +481,8 @@ def main():
             subgraph_pyg, vertex_map,neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
                                                                         feature_dim, temporal_graph,
                                                                         temporal_graph_pyg, num_vertex, edge_dim,
-                                                                        sequence_features2_matrix,
-                                                                        time_range_core_number, device)
+                                                                        sequence_features1_matrix,
+                                                                        time_range_core_number,max_layer_id,max_time_range_layers,device,partition,num_timestamp, root)
             
             for epoch in range(epochs):
                 model.train()
@@ -591,8 +595,8 @@ def main():
                 subgraph, vertex_map, neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
                                                                         feature_dim, temporal_graph,
                                                                         temporal_graph_pyg, num_vertex, edge_dim,
-                                                                        sequence_features2_matrix,
-                                                                        time_range_core_number, device)
+                                                                        sequence_features1_matrix,
+                                                                        time_range_core_number,max_layer_id,max_time_range_layers,device,partition,num_timestamp, root)
                 if subgraph is not None and vertex_map is not None and query_vertex in vertex_map:
                     embeddings = model(subgraph.to(device))
                     query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)

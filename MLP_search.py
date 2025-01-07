@@ -107,6 +107,7 @@ def read_core_number():
             range_part, core_numbers_part = line.split(' ', 1)
             range_start, range_end = map(int, range_part.strip('[]').split(','))
             is_node_range = False
+            
             if (range_start, range_end) in time_range_set:
                 is_node_range = True
             for pair in core_numbers_part.split():
@@ -254,10 +255,9 @@ def model_output_for_path(time_start, time_end, vertex_set, sequence_features):
     return output
 
 def load_models(depth_id=0):
-    # 读取节点的模型
     print("Loading models...")
-    # load models in a tree
-    for layer_id in range(0, depth_id + 1):
+    loaded_model_count = 0
+    for layer_id in range(0, 1):
         for i in range(len(time_range_layers[layer_id])):
             print(f"{i+1}/{len(time_range_layers[layer_id])}")
             time_start = time_range_layers[layer_id][i][0]
@@ -271,11 +271,14 @@ def load_models(depth_id=0):
                 model = MLP(2, max_time_range_layers[max_layer_id], 64).to(device)
                 model.load_state_dict(torch.load(f'models/{dataset_name}/model_{layer_id}_{i}.pth'))
                 model.eval()
+            
             node = tree_query(time_start, time_end)
-            if node is None:
-                print("Error: node not found.")
-            else:
+            if node is not None:
                 node.set_model(model)
+                loaded_model_count += 1
+            else:
+                print("Error: node not found.")
+    print(f"loaded_model_count: {loaded_model_count}")
 
 # @profile
 def model_out_put_for_any_range_vertex_set(vertex_set, time_start, time_end):

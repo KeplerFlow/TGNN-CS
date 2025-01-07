@@ -6,6 +6,8 @@ rm -rf .git
 
 git init 
 
+git remote set-url origin git@github.com:KeplerFlow/TGNN-CS.git
+
 ### Commit the Code
 
 git add .
