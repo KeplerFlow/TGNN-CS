@@ -74,6 +74,32 @@ def read_core_number(dataset_name, num_vertex, time_range_set):
 
     return num_core_number, vertex_core_numbers, time_range_core_number
 
+def read_core_number_tree(dataset_name, num_vertex, time_range_set):
+    print("Loading the core number...")
+    vertex_core_numbers = [{} for _ in range(num_vertex)]
+    time_range_core_number = defaultdict(dict)
+    core_number_filename = f'../datasets/{dataset_name}-core_number.txt'
+    with open(core_number_filename, 'r') as f:
+        first_line = True
+        for line in f:
+            if first_line:
+                num_core_number = int(line.strip())
+                first_line = False
+                continue
+            range_part, core_numbers_part = line.split(' ', 1)
+            range_start, range_end = map(int, range_part.strip('[]').split(','))
+            is_node_range = False
+            if (range_start, range_end) in time_range_set:
+                is_node_range = True
+            for pair in core_numbers_part.split():
+                vertex, core_number = map(int, pair.split(':'))
+                if range_start == range_end:
+                    vertex_core_numbers[vertex][range_start] = core_number
+                if is_node_range:
+                    time_range_core_number[(range_start, range_end)][vertex] = core_number
+    return num_core_number, vertex_core_numbers, time_range_core_number
+
+
 def construct_feature_matrix(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device):
     print("Constructing the feature matrix...")
     sequence_features1_matrix = torch.empty(0, 0, 0)
@@ -172,7 +198,7 @@ def construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, ver
     total_size = indices_size + values_size
     print(f"feature matrix 占用的内存大小为 {total_size / (1024 ** 2):.2f} MB")
 
-    return sequence_features1_matrix, indices_vertex_of_matrix
+    return sequence_features1_matrix
 
 def init_vertex_features(t_start, t_end, vertex_set, feature_dim, anchor, sequence_features1_matrix, time_range_core_number, device):
 
@@ -385,7 +411,11 @@ def model_output_for_path(time_start, time_end, vertex_set, sequence_features,
         return torch.zeros(len(vertex_set), 1, device=device)
     sequence_features = sequence_features.to(device)
     node = root
+    
     path = [node]
+
+    print(path)
+
     while node.layer_id < max_layer_id:
         move_to_next = False
         for child in node.children:

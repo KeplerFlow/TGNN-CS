@@ -106,30 +106,29 @@ def main():
     
     #####################
 
-    root, max_layer_id = build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers)
+    # root,max_layer_id = build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers)
 
-    load_models(0, time_range_layers, max_layer_id, device, dataset_name, 
-                max_time_range_layers, partition,root,num_timestamp)
+    # load_models(0, time_range_layers, max_layer_id, device, dataset_name, 
+    #             max_time_range_layers, partition,root,num_timestamp)
 
-    sequence_features_matrix_tree, indices_vertex_of_matrix = construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
+    # sequence_features1_matrix = construct_feature_matrix_tree(num_vertex, num_timestamp, temporal_graph, vertex_core_numbers, device)
 
-    query_time_range_start = random.randint(0, num_timestamp-1)
-    query_time_range_end = random.randint(query_time_range_start, min(num_timestamp-1, query_time_range_start + 100))
-    query_vertex = random.randint(0, num_vertex - 1)
+    # query_time_range_start = 1700#random.randint(0, num_timestamp-1)
+    # query_time_range_end = random.randint(query_time_range_start, min(num_timestamp-1, query_time_range_start + 100))
+    # query_vertex = 4213#random.randint(0, num_vertex - 1)
+    
+    # print(f"query_vertex: {query_vertex}")
+    # print(f"query_time_range_start: {query_time_range_start}")
+    # print(f"query_time_range_end: {query_time_range_end}")
+    
+    # time_start = query_time_range_start
+    # time_end = query_time_range_end
 
-    query_vertex_core_number = model_out_put_for_any_range_vertex_set(
-        [query_vertex], query_time_range_start, query_time_range_end,
-        max_layer_id,
-        max_time_range_layers,
-        device,
-        sequence_features_matrix_tree,
-        partition,
-        num_timestamp, 
-        root
-    )
-    print(f"query_vertex: {query_vertex}")
+    # vertex_set = [query_vertex]
 
-    print(f"query_vertex_core_number:{query_vertex_core_number}")
+    # output = model_out_put_for_any_range_vertex_set(vertex_set,time_start,time_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+
+    # print(f"query_vertex_core_number:{output}")
 
     ######################
 
@@ -421,9 +420,18 @@ def main():
         for query_vertex in query_vertex_list:
             print(valid_cnt)
             start_time = time.time()
+            # 获取query_vertex的一个邻居
+            core_number=0
+            query_vertex_neighbor=0
+            while core_number<5:
+                query_vertex_neighbor = random.choice(list(temporal_graph[query_vertex]))
+                core_number = time_range_core_number[(t_start, t_end)].get(query_vertex_neighbor,0)
 
             # 为查询节点生成训练数据
-            center_vertices = {query_vertex}  # 只使用查询节点作为中心
+            center_vertices = set()
+            center_vertices.add(query_vertex)
+            center_vertices.add(query_vertex_neighbor)
+
             triplets = generate_triplets(center_vertices, k_hop, t_start, t_end, num_vertex, temporal_graph,
                                         time_range_core_number, time_range_link_samples_cache, subgraph_k_hop_cache)
             quadruplet = [(t[0], t[1], t[2], (t_start, t_end)) for t in triplets]
@@ -437,7 +445,7 @@ def main():
             model.eval()
             with torch.no_grad():
                 feature_dim = node_in_channels
-                subgraph, vertex_map, neighbors_k_hop = extract_subgraph(query_vertex, t_start, t_end, k_hop,
+                subgraph, vertex_map, neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
                                                                         feature_dim, temporal_graph,
                                                                         temporal_graph_pyg, num_vertex, edge_dim,
                                                                         sequence_features2_matrix,
@@ -451,12 +459,13 @@ def main():
                     if valid_neighbors_k_hop:
                         neighbors_embeddings = embeddings[torch.tensor([vertex_map[i] for i in valid_neighbors_k_hop], device=device)]
                         distances = F.pairwise_distance(query_vertex_embedding, neighbors_embeddings)
-                        GNN_temporal_density, GNN_temporal_conductance, result = temporal_test_GNN_query_time(
-                            distances, vertex_map, query_vertex, t_start, t_end, temporal_graph, device, num_vertex
+                        GNN_temporal_density, GNN_temporal_conductance, result = temporal_test_GNN_query_time_multiple_query(
+                            distances, vertex_map,center_vertices, t_start, t_end, temporal_graph, device, num_vertex
                         )
                         temporal_density_ratio += GNN_temporal_density
                         temporal_conductance_ratio += GNN_temporal_conductance
                         result_len += len(result)
+                        print(f"center_vertices: {center_vertices}")
                         print(f"before test number: {len(result)}")
                         print(f"before temporal density ratio: {GNN_temporal_density}")
                         print(f"before temporal conductance ratio: {GNN_temporal_conductance}")
@@ -465,7 +474,7 @@ def main():
             
             # 查询特定的微调
             model.train()
-            subgraph_pyg, vertex_map,neighbors_k_hop = extract_subgraph(query_vertex, t_start, t_end, k_hop,
+            subgraph_pyg, vertex_map,neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
                                                                         feature_dim, temporal_graph,
                                                                         temporal_graph_pyg, num_vertex, edge_dim,
                                                                         sequence_features2_matrix,
@@ -483,7 +492,7 @@ def main():
                     "backward_pass": 0.0,
                     "optimizer_step": 0.0,
                 }
-                for batch_idx, batch in enumerate(train_loader):
+                for batch_idx, batch in enumerate(query_loader):
                     batch_start_time = time.time()
                     
                     data_loading_start_time = time.time()
@@ -579,7 +588,7 @@ def main():
             model.eval()
             with torch.no_grad():
                 feature_dim = node_in_channels
-                subgraph, vertex_map, neighbors_k_hop = extract_subgraph(query_vertex, t_start, t_end, k_hop,
+                subgraph, vertex_map, neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
                                                                         feature_dim, temporal_graph,
                                                                         temporal_graph_pyg, num_vertex, edge_dim,
                                                                         sequence_features2_matrix,
@@ -593,12 +602,13 @@ def main():
                     if valid_neighbors_k_hop:
                         neighbors_embeddings = embeddings[torch.tensor([vertex_map[i] for i in valid_neighbors_k_hop], device=device)]
                         distances = F.pairwise_distance(query_vertex_embedding, neighbors_embeddings)
-                        GNN_temporal_density, GNN_temporal_conductance, result = temporal_test_GNN_query_time(
-                            distances, vertex_map, query_vertex, t_start, t_end, temporal_graph, device, num_vertex
+                        GNN_temporal_density, GNN_temporal_conductance, result = temporal_test_GNN_query_time_multiple_query(
+                            distances, vertex_map,center_vertices, t_start, t_end, temporal_graph, device, num_vertex
                         )
                         temporal_density_ratio += GNN_temporal_density
                         temporal_conductance_ratio += GNN_temporal_conductance
                         result_len += len(result)
+                        print(f"center_vertices: {center_vertices}")
                         print(f"after test number: {len(result)}")
                         print(f"after temporal density ratio: {GNN_temporal_density}")
                         print(f"after temporal conductance ratio: {GNN_temporal_conductance}")

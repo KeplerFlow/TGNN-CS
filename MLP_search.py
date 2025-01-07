@@ -255,8 +255,6 @@ def model_output_for_path(time_start, time_end, vertex_set, sequence_features):
 
 def load_models(depth_id=0):
     # 读取节点的模型
-    global model_time_range_layers
-    model_time_range_layers = [[] for _ in range(len(time_range_layers))]
     print("Loading models...")
     # load models in a tree
     for layer_id in range(0, depth_id + 1):

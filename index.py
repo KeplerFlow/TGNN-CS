@@ -14,8 +14,6 @@ def model_out_put_for_any_range_vertex_set(
     num_timestamp, 
     root
 ):
-    # 直接用tensor
-    # inter_time  # 假设不再需要这个变量，或者它应该从其他地方传入或计算
     node = tree_query(time_start, time_end,num_timestamp, root, max_layer_id)
     if node is None:
         print("Error: node not found.")

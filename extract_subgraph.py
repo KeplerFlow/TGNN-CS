@@ -41,8 +41,7 @@ def get_samples(center_vertex, k, t_start, t_end, filtered_temporal_graph, verte
     hard_negative_neighbors = hard_negative_neighbors - positive_neighbors - {center_vertex}
     subgraph_k_hop_cache[(center_vertex, (t_start, t_end))] = sorted(candidates_neighbors)
     
-    return positive_neighbors, hard_negative_neighbors, candidates_neighbors
-
+    return positive_neighbors, hard_negative_neighbors, candidates_neighbors 
 
 def generate_time_range_link_samples(k_hop_samples, filtered_temporal_graph, num_vertex):
     link_samples_dict = defaultdict(list)
@@ -293,4 +292,77 @@ def extract_subgraph(anchor, t_start, t_end, k, feature_dim, temporal_graph, tem
         edge_attr=sub_edge_attr,
         device=device
     )
+    return subgraph_pyg, vertex_map, neighbors_k_hop
+
+def extract_subgraph_multiple_query(query_vertex, t_start, t_end, k, feature_dim, temporal_graph, temporal_graph_pyg, 
+                    num_vertex, edge_dim, vertex_features, time_range_core_number, device):
+    # 确保 query_vertex 是张量类型
+    if not isinstance(query_vertex, torch.Tensor):
+        query_vertex = torch.tensor(query_vertex, device=device)
+    
+    # 初始化访问集合，将所有查询节点加入
+    visited = set(query_vertex.cpu().numpy())
+    
+    # 初始化队列，将所有查询节点加入
+    queue = deque([(v.item(), 0) for v in query_vertex])  # (节点, 当前跳数)
+    neighbors_k_hop = set(query_vertex.cpu().numpy())
+    
+    while queue:
+        top_vertex, depth = queue.popleft()
+        if depth > k:
+            continue
+            
+        for t, neighbors in temporal_graph[top_vertex].items():
+            if t_start <= t <= t_end:
+                for neighbor in neighbors:
+                    if neighbor not in visited:
+                        queue.append((neighbor, depth + 1))
+                        visited.add(neighbor)
+                        neighbors_k_hop.add(neighbor)
+    
+    neighbors_k_hop = torch.tensor(sorted(list(neighbors_k_hop)), device=device, dtype=torch.long)
+    
+    # 构建 vertex_map
+    vertex_map = torch.full((num_vertex,), -1, dtype=torch.long)
+    vertex_map[neighbors_k_hop] = torch.arange(len(neighbors_k_hop))
+    vertex_map = vertex_map.to(device)
+    
+    # 过滤条件
+    mask = (
+        (vertex_map[temporal_graph_pyg.edge_index[0]] != -1)
+        & (vertex_map[temporal_graph_pyg.edge_index[1]] != -1)
+    )
+    mask = mask.to(device)
+    
+    sub_edge_index = temporal_graph_pyg.edge_index[:, mask]
+    
+    # 将边索引映射到子图编号
+    sub_edge_index = vertex_map[sub_edge_index]
+    
+    # 提取边属性
+    sub_edge_attr = temporal_graph_pyg.edge_attr.coalesce().to_dense()[mask]
+    time_mask = (sub_edge_attr >= t_start) & (sub_edge_attr <= t_end)
+    valid_edges = time_mask.any(dim=1)
+    sub_edge_attr[~time_mask] = -1
+    sub_edge_attr = sub_edge_attr[valid_edges]
+    sub_edge_index = sub_edge_index[:, valid_edges]
+    
+    # 生成边属性-傅立叶变换
+    mask = (sub_edge_attr != -1)
+    indices = mask.nonzero(as_tuple=True)
+    origin_edge_attr = torch.zeros(sub_edge_attr.shape[0], t_end - t_start + 1, device=device)
+    origin_edge_attr[indices[0], (sub_edge_attr[indices] - t_start).long()] = 1
+    target_dim = edge_dim
+    origin_edge_attr = F.adaptive_avg_pool1d(origin_edge_attr.unsqueeze(1), target_dim)
+    sub_edge_attr = origin_edge_attr.squeeze(1)
+    sub_edge_attr = torch.abs(torch.fft.fft(sub_edge_attr, dim=1))
+    
+    # 构建子图 Data 对象
+    subgraph_pyg = Data(
+        x=init_vertex_features(t_start, t_end, neighbors_k_hop, feature_dim, -1, vertex_features, time_range_core_number, device),
+        edge_index=sub_edge_index,
+        edge_attr=sub_edge_attr,
+        device=device
+    )
+    
     return subgraph_pyg, vertex_map, neighbors_k_hop
