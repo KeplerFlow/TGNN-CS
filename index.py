@@ -1,6 +1,5 @@
 import torch
 
-from utils import *
 
 def tree_query(time_start, time_end, num_timestamp, root, max_layer_id):
     if time_start < 0 or time_end >= num_timestamp or time_start > time_end:

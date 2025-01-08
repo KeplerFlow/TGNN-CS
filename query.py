@@ -119,7 +119,7 @@ def temporal_test_GNN_query_time_multiple_query(distances, vertex_map, query_ver
         result_distance.append(distance)
         
         if len(result) > len(query_vertices):
-            tau = 0.9
+            tau = 0.7
             alpha = np.cos((np.pi / 2) * (len(result) / (less_num ** tau if less_num > 0 else 1)))
             threshold = alpha * threshold + (1-alpha) * (sum(result_distance) / len(result_distance))
             threshold = min(threshold, initial_threshold)

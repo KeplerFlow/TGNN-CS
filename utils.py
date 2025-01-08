@@ -324,11 +324,12 @@ def init_vertex_features_index(t_start, t_end, vertex_set, feature_dim, anchor, 
     else:
         degree_tensor = F.adaptive_avg_pool1d(degree_tensor, output_size=feature_dim - 2)
     degree_tensor = degree_tensor.squeeze(1)
-    # core_number_values = torch.tensor([time_range_core_number[(t_start, t_end)].get(v.item(), 0) for v in vertex_set],
-    #                                   dtype=torch.float32, device=device)
+    core_number_values = torch.tensor([time_range_core_number[(t_start, t_end)].get(v.item(), 0) for v in vertex_set],
+                                      dtype=torch.float32, device=device)
     
-    core_number_values = torch.tensor([model_out_put_for_any_range_vertex_set([v.item()],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root) for v in vertex_set],
-                                       dtype=torch.float32, device=device)
+    # core_number_values = torch.tensor(model_out_put_for_any_range_vertex_set(vertex_set,t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root),
+    #                                    dtype=torch.float32, device=device)
+    # core_number_values = model_out_put_for_any_range_vertex_set(vertex_set,t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
     core_number_values = (core_number_values - core_number_values.min()) / (
                 core_number_values.max() - core_number_values.min() + 1e-6)
 

@@ -424,17 +424,17 @@ def main():
             start_time = time.time()
             # 获取query_vertex的一个邻居
             core_number=0
-            query_vertex_neighbor=0
-            while core_number<5:
-                query_vertex_neighbor = random.choice(list(temporal_graph[query_vertex]))
-                core_number = time_range_core_number[(t_start, t_end)].get(query_vertex_neighbor, 0)
-                # core_number = model_out_put_for_any_range_vertex_set([query_vertex_neighbor],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+            # query_vertex_neighbor=0
+            # while core_number<5:
+            #     query_vertex_neighbor = random.choice(list(temporal_graph[query_vertex]))
+            #     core_number = time_range_core_number[(t_start, t_end)].get(query_vertex_neighbor, 0)
+            #    # core_number = model_out_put_for_any_range_vertex_set([query_vertex_neighbor],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
 
 
             # 为查询节点生成训练数据
             center_vertices = set()
             center_vertices.add(query_vertex)
-            center_vertices.add(query_vertex_neighbor)
+            # center_vertices.add(query_vertex_neighbor)
 
             triplets = generate_triplets_index(center_vertices, k_hop, t_start, t_end, num_vertex, temporal_graph,
                                         time_range_core_number, time_range_link_samples_cache, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
@@ -445,15 +445,16 @@ def main():
             query_loader = DataLoader(query_dataset, batch_size=batch_size, shuffle=True,num_workers=8,pin_memory=True,
                                     collate_fn=quadruplet_collate_fn)
             # before finetune
-            # 评估阶段
-            model.eval()
-            with torch.no_grad():
-                feature_dim = node_in_channels
-                subgraph, vertex_map, neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
+            subgraph, vertex_map, neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
                                                                         feature_dim, temporal_graph,
                                                                         temporal_graph_pyg, num_vertex, edge_dim,
                                                                         sequence_features1_matrix,
                                                                         time_range_core_number, max_layer_id,max_time_range_layers,device,partition,num_timestamp, root)
+            # 评估阶段
+            model.eval()
+            with torch.no_grad():
+                feature_dim = node_in_channels
+                
                 if subgraph is not None and vertex_map is not None and query_vertex in vertex_map:
                     embeddings = model(subgraph.to(device))
                     query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)
@@ -478,12 +479,7 @@ def main():
             
             # 查询特定的微调
             model.train()
-            subgraph_pyg, vertex_map,neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
-                                                                        feature_dim, temporal_graph,
-                                                                        temporal_graph_pyg, num_vertex, edge_dim,
-                                                                        sequence_features1_matrix,
-                                                                        time_range_core_number,max_layer_id,max_time_range_layers,device,partition,num_timestamp, root)
-            
+
             for epoch in range(epochs):
                 model.train()
                 epoch_loss = 0.0
@@ -514,7 +510,7 @@ def main():
                     vertex_maps = []
                     for anchor, time_range in zip(anchors, time_ranges):
                         # Add subgraph creation logic here
-                        subgraphs.append(subgraph_pyg)
+                        subgraphs.append(subgraph)
                         vertex_maps.append(vertex_map)
                         
                     batched_subgraphs = Batch.from_data_list(subgraphs).to(device)
@@ -587,16 +583,10 @@ def main():
                         print(f"  {name}: {percentage:.2f}%")
                 print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss / len(train_loader):.4f}", end=' ')
                 
-
             # 评估阶段
             model.eval()
             with torch.no_grad():
                 feature_dim = node_in_channels
-                subgraph, vertex_map, neighbors_k_hop = extract_subgraph_multiple_query(torch.tensor(list(center_vertices)), t_start, t_end, k_hop,
-                                                                        feature_dim, temporal_graph,
-                                                                        temporal_graph_pyg, num_vertex, edge_dim,
-                                                                        sequence_features1_matrix,
-                                                                        time_range_core_number,max_layer_id,max_time_range_layers,device,partition,num_timestamp, root)
                 if subgraph is not None and vertex_map is not None and query_vertex in vertex_map:
                     embeddings = model(subgraph.to(device))
                     query_vertex_embedding = embeddings[vertex_map[query_vertex]].unsqueeze(0)
