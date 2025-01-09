@@ -324,12 +324,16 @@ def init_vertex_features_index(t_start, t_end, vertex_set, feature_dim, anchor, 
     else:
         degree_tensor = F.adaptive_avg_pool1d(degree_tensor, output_size=feature_dim - 2)
     degree_tensor = degree_tensor.squeeze(1)
-    core_number_values = torch.tensor([time_range_core_number[(t_start, t_end)].get(v.item(), 0) for v in vertex_set],
-                                      dtype=torch.float32, device=device)
+
+    # core_number_values = torch.tensor([time_range_core_number[(t_start, t_end)].get(v.item(), 0) for v in vertex_set],
+    #                                   dtype=torch.float32, device=device)
     
-    # core_number_values = torch.tensor(model_out_put_for_any_range_vertex_set(vertex_set,t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root),
-    #                                    dtype=torch.float32, device=device)
-    # core_number_values = model_out_put_for_any_range_vertex_set(vertex_set,t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+    core_number_dict = model_out_put_for_any_range_vertex_set(vertex_set, t_start, t_end, max_layer_id, max_time_range_layers, device, sequence_features1_matrix, partition, num_timestamp, root)
+
+    # Create a tensor from the dictionary values, using 0 for missing vertices
+    core_number_values = torch.tensor([core_number_dict.get(v.item(), 0) for v in vertex_set],
+                                    dtype=torch.float32, device=device)
+    
     core_number_values = (core_number_values - core_number_values.min()) / (
                 core_number_values.max() - core_number_values.min() + 1e-6)
 
@@ -390,7 +394,7 @@ def get_candidate_neighbors(center_vertex, k, t_start, t_end, filtered_temporal_
     subgraph_k_hop_cache[cache_key] = subgraph_result
     return subgraph_result
 
-def get_candidate_neighbors_index(center_vertex, k, t_start, t_end, filtered_temporal_graph, total_edge_weight, time_range_core_number, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root):
+def get_candidate_neighbors_index(center_vertex, k, t_start, t_end, filtered_temporal_graph, total_edge_weight, time_range_core_number, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root,core_number_dict):
 
     cache_key = (center_vertex, k, t_start, t_end)
     if cache_key in subgraph_k_hop_cache:
@@ -398,8 +402,7 @@ def get_candidate_neighbors_index(center_vertex, k, t_start, t_end, filtered_tem
     
     visited = set()
     visited.add(center_vertex)
-    query_core_number = time_range_core_number[(t_start, t_end)].get(center_vertex, 0)
-    # query_core_number = model_out_put_for_any_range_vertex_set([center_vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+    query_core_number = core_number_dict.get(center_vertex, 0)
 
     queue = deque([(center_vertex, query_core_number, 0)])  # 队列初始化 (节点, core number, 距离)
     subgraph_result = set()
@@ -511,26 +514,25 @@ def get_node_path(time_start, time_end, num_timestamp, root, max_layer_id):
     return path
 
 
-def load_models(depth_id, time_range_layers, max_layer_id, device, dataset_name,
+def load_models(time_range_layers, max_layer_id, device, dataset_name,
                 max_time_range_layers, partition, root,num_timestamp):
     # 读取节点的模型
     print("Loading models...")
     loaded_model_count = 0 
     # load models in a tree
-    print(depth_id)
-    for layer_id in range(0, depth_id):
+    for layer_id in range(0, max_layer_id+1):
         for i in range(len(time_range_layers[layer_id])):
-            print(f"{i+1}/{len(time_range_layers[layer_id])}")
+            # print(f"{i+1}/{len(time_range_layers[layer_id])}")
             time_start = time_range_layers[layer_id][i][0]
             time_end = time_range_layers[layer_id][i][1]
             model = None
             if layer_id != max_layer_id:
                 model = MLPNonleaf(2, max_time_range_layers[layer_id + 1] * 2, partition, 64).to(device)
-                model.load_state_dict(torch.load(f'models/{dataset_name}/model_{layer_id}_{i}.pth'))
+                model.load_state_dict(torch.load(f'models/{dataset_name}/model_{layer_id}_{i}.pth', weights_only=True))
                 model.eval()
             else:
                 model = MLP(2, max_time_range_layers[max_layer_id], 64).to(device)
-                model.load_state_dict(torch.load(f'models/{dataset_name}/model_{layer_id}_{i}.pth'))
+                model.load_state_dict(torch.load(f'models/{dataset_name}/model_{layer_id}_{i}.pth', weights_only=True))
                 model.eval()
             node = tree_query(time_start, time_end,num_timestamp, root, max_layer_id)
             if node is not None:
@@ -538,7 +540,7 @@ def load_models(depth_id, time_range_layers, max_layer_id, device, dataset_name,
                 loaded_model_count += 1
             else:
                 print("Error: node not found.")
-                
+    print(f"loaded_model_count: {loaded_model_count}")
 
 class MultiSampleQuadrupletDataset():
     def __init__(self, quadruplets):

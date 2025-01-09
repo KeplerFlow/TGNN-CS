@@ -85,7 +85,7 @@ def main():
     node_out_channels = 16
     edge_dim = 8
     learning_rate = 0.001
-    epochs = 3
+    epochs = 1
     batch_size = 4
     k_hop = 5
     positive_hop = 3
@@ -99,6 +99,13 @@ def main():
     time_range_layers, min_time_range_layers, max_time_range_layers, time_range_set, max_layer_id = get_timerange_layers(num_timestamp, max_range, partition)
 
     print(time_range_layers)
+
+    windows_number_set = set()  # 创建一个空集合
+
+    for sublist in time_range_layers:
+        for tup in sublist:
+            for number in tup:
+                windows_number_set.add(number)  # 将数字添加到集合中
     
     num_core_number, vertex_core_numbers, time_range_core_number = read_core_number(dataset_name, num_vertex, time_range_set)
     
@@ -108,10 +115,25 @@ def main():
 
     root,max_layer_id = build_tree(num_timestamp, time_range_core_number, num_vertex, temporal_graph, time_range_layers)
 
-    load_models(len(time_range_layers), time_range_layers, max_layer_id, device, dataset_name, 
+    load_models(time_range_layers, max_layer_id, device, dataset_name, 
                 max_time_range_layers, partition,root,num_timestamp)
 
-    # 以下注释代码用于测试集成的索引预测core
+    cp_index = CP_Index(sequence_features1_matrix,partition,num_timestamp,root,max_layer_id,max_time_range_layers,device)
+
+    # 以下注释代码用于测试集成的索引预测core   
+    
+    # start_time = time.time()
+    # total_vertex_set = set(temporal_graph.keys())
+    # total_vertex_indices = torch.tensor(list(total_vertex_set), device=device)
+    # core_number_dict = cp_index.predict(total_vertex_indices,1584,1619)
+
+    # # # core_number_dict = model_out_put_for_any_range_vertex_set(total_vertex_indices, 1583,1627, max_layer_id, max_time_range_layers, device, sequence_features1_matrix.clone(), partition, num_timestamp, root)
+
+    # time_cost = time.time()-start_time
+    # print(f"time cost:{time_cost}")
+    # # print(core_number_dict)
+    # count_greater_than_5 = sum(1 for value in core_number_dict.values() if value >= 5)
+    # print(f"Number of values greater than or equal to 5: {count_greater_than_5}")
     # query_time_range_start = random.randint(0, num_timestamp-1)
     # query_time_range_end = random.randint(query_time_range_start, min(num_timestamp-1, query_time_range_start + 100))
     # query_vertex = random.randint(0, num_vertex - 1)
@@ -145,13 +167,14 @@ def main():
             
     quadruplet = []  # 训练数据用四元组形式存储
 
-    print(subgraph_k_hop_cache)
+
+    # print(subgraph_k_hop_cache)
     
     for i, time_range in enumerate(train_time_range_list):
         t_start = time_range[0]
         t_end = time_range[1]
-        print(f"Generating training data {i + 1}/{len(train_time_range_list)}...")
-        print(f"Time range: {t_start} - {t_end}")
+        # print(f"Generating training data {i + 1}/{len(train_time_range_list)}...")
+        # print(f"Time range: {t_start} - {t_end}")
         center_vertices = set()
         select_limit = 50
         select_cnt = 0
@@ -179,16 +202,16 @@ def main():
             quadruplet.append((triplet[0], triplet[1], triplet[2], (t_start, t_end)))
         
         # generate pyg data for the subgraph of the current time range
-        print("done1")
+        # print("done1")
         temp_subgraph_pyg, vertex_map = extract_subgraph_for_time_range(center_vertices, t_start, t_end, node_in_channels, temporal_graph_pyg, num_vertex, edge_dim, device,sequence_features1_matrix, time_range_core_number,subgraph_k_hop_cache)
-        print("done2")
+        # print("done2")
         temp_subgraph_pyg = temp_subgraph_pyg.to('cpu')
         
         vertex_map = vertex_map.to('cpu')
         subgraph_pyg_cache[(t_start, t_end)] = temp_subgraph_pyg
         subgraph_vertex_map_cache[(t_start, t_end)] = vertex_map
         torch.cuda.empty_cache()
-        print("done3")
+        # print("done3")
 
     test_time_range_list = []
     while len(test_time_range_list) < num_time_range_samples:
@@ -204,8 +227,8 @@ def main():
     for i, time_range in enumerate(test_time_range_list):
         t_start = time_range[0]
         t_end = time_range[1]
-        print(f"Generating testing data {i + 1}/{len(test_time_range_list)}...")
-        print(f"Time range: {t_start} - {t_end}")
+        # print(f"Generating testing data {i + 1}/{len(test_time_range_list)}...")
+        # print(f"Time range: {t_start} - {t_end}")
         center_vertices = set()
         select_limit = 50
         select_cnt = 0
@@ -254,6 +277,7 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True, collate_fn=quadruplet_collate_fn)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=quadruplet_collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=quadruplet_collate_fn)
+    
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scaler = GradScaler()  # 用于混合精度训练
@@ -389,11 +413,8 @@ def main():
 
     test_time_range_list = []
     while len(test_time_range_list) < 10:
-        t_layer = random.randint(1, len(time_range_layers) - 2)
-        if t_layer == 0:
-            continue
-        t_idx = random.randint(0, len(time_range_layers[t_layer]) - 1)
-        t_start, t_end = time_range_layers[t_layer][t_idx][0], time_range_layers[t_layer][t_idx][1]
+        t_start = random.randint(0, num_timestamp - 101)  # Ensure there's enough space for a window of at least 100
+        t_end = random.randint(t_start + 100, min(num_timestamp - 1, t_start + 100))  # Ensure t_end is at least 100 units after t_start
         if (t_start, t_end) not in test_time_range_list:
             test_time_range_list.append((t_start, t_end))
     temporal_density_ratio = 0
@@ -405,23 +426,44 @@ def main():
 
     for t_start, t_end in test_time_range_list:
         print(f"Test time range: [{t_start}, {t_end}]")
+        total_vertex_set = set(temporal_graph.keys())
+        total_vertex_indices = torch.tensor(list(total_vertex_set), device=device)
+        start_time = time.time()
+        core_number_dict = cp_index.predict(total_vertex_indices,t_start,t_end)
+        time_cost = time.time()-start_time
+        print(f"time cost:{time_cost}")
+        count_greater_than_5 = sum(1 for value in core_number_dict.values() if value >= 5)
+        print(f"Number of values greater than or equal to 5: {count_greater_than_5}")
+        if count_greater_than_5 < 10:
+            continue
         query_vertex_list = set()
+        nodes_with_core_gte_5 = [node for node, core in core_number_dict.items() if core >= 5]
+
         while len(query_vertex_list) < 10:
-            query_vertex = random.choice(range(num_vertex))
-            core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
-            # core_number = model_out_put_for_any_range_vertex_set([query_vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+             # 从符合条件的节点列表中随机选择
+            if nodes_with_core_gte_5:  # 确保列表不为空
+                query_vertex = random.choice(nodes_with_core_gte_5)
+                query_vertex_list.add(query_vertex)
+            else:
+                print("No nodes found with core number greater than or equal to 5.")
+                break # 如果没有符合条件的节点，则跳出循环
 
-            # print(f"core_number:{core_number},core_number_index:{core_number_index}")
+            # query_vertex = random.choice(range(num_vertex))
+            # # core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
+            # # core_number = model_out_put_for_any_range_vertex_set([query_vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+            # core_number = core_number_dict.get(query_vertex, 0)
+            # # print(f"core_number:{core_number},core_number_index:{core_number_index}")
 
-            while core_number < 5:
-                query_vertex = random.choice(range(num_vertex))
-                core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
-                # core_number = model_out_put_for_any_range_vertex_set([query_vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
-            query_vertex_list.add(query_vertex)
-
+            # while core_number < 5:
+            #     query_vertex = random.choice(range(num_vertex))
+            #     # core_number = time_range_core_number[(t_start, t_end)].get(query_vertex, 0)
+            #     core_number = core_number_dict.get(query_vertex, 0)
+            #     # core_number = model_out_put_for_any_range_vertex_set([query_vertex],t_start,t_end,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+            # query_vertex_list.add(query_vertex)
+       
         for query_vertex in query_vertex_list:
             print(valid_cnt)
-            start_time = time.time()
+            
             # 获取query_vertex的一个邻居
             core_number=0
             # query_vertex_neighbor=0
@@ -436,8 +478,8 @@ def main():
             center_vertices.add(query_vertex)
             # center_vertices.add(query_vertex_neighbor)
 
-            triplets = generate_triplets_index(center_vertices, k_hop, t_start, t_end, num_vertex, temporal_graph,
-                                        time_range_core_number, time_range_link_samples_cache, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root)
+            triplets = generate_triplets_index([query_vertex], k_hop, t_start, t_end, num_vertex, temporal_graph,
+                                        time_range_core_number, time_range_link_samples_cache, subgraph_k_hop_cache,max_layer_id,max_time_range_layers,device,sequence_features1_matrix,partition,num_timestamp, root,core_number_dict)
             quadruplet = [(t[0], t[1], t[2], (t_start, t_end)) for t in triplets]
 
             # 创建数据加载器

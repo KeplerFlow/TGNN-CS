@@ -34,8 +34,8 @@ print(f"Using device: {device}")
 
 # 全局常量和变量
 
-# dataset_name = 'mathoverflow'
-dataset_name = 'wikitalk'
+dataset_name = 'mathoverflow'
+# dataset_name = 'wikitalk'
 num_vertex = 0
 num_edge = 0
 num_timestamp = 0
@@ -254,10 +254,10 @@ def model_output_for_path(time_start, time_end, vertex_set, sequence_features):
                 output = output.reshape(len(vertex_set), 1)
     return output
 
-def load_models(depth_id=0):
+def load_models(depth_id):
     print("Loading models...")
     loaded_model_count = 0
-    for layer_id in range(0, 1):
+    for layer_id in range(0, depth_id+1):
         for i in range(len(time_range_layers[layer_id])):
             print(f"{i+1}/{len(time_range_layers[layer_id])}")
             time_start = time_range_layers[layer_id][i][0]
@@ -551,6 +551,16 @@ def query_test():
     total_prediction_time = 0.0
     valid_query_num = 0
     total_result_num = 0.0
+    total_vertex_set = set(temporal_graph.keys())
+    query_time_range_start = random.randint(0, num_timestamp-1)
+    query_time_range_end = random.randint(query_time_range_start, min(num_timestamp-1, query_time_range_start + 100))
+    total_vertex_indices = torch.tensor(list(total_vertex_set), device=device)
+    start_time = time.time()
+    query_vertex_core_number = model_out_put_for_any_range_vertex_set(total_vertex_indices, 1584,1627)
+    print (query_vertex_core_number)
+    time_cost = time.time()-start_time
+    print(f"time cost:{time_cost}")
+    
     for i in range(query_num):
         query_time_range_start = random.randint(0, num_timestamp-1)
         query_time_range_end = random.randint(query_time_range_start, min(num_timestamp-1, query_time_range_start + 100))
@@ -558,7 +568,6 @@ def query_test():
         query_result = []
 
         
-        query_vertex_core_number = model_out_put_for_any_range_vertex_set([query_vertex], query_time_range_start, query_time_range_end)
         
         if query_vertex_core_number.item() < 10:
             print("The query vertex is not a core vertex.")

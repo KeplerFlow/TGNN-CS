@@ -1,5 +1,29 @@
 import torch
 
+class CP_Index:
+    def __init__(self, sequence_features1_matrix, partition, num_timestamp, root, max_layer_id, max_time_range_layers, device):
+        self.sequence_features1_matrix = sequence_features1_matrix.clone()  # 拷贝一份
+        self.partition = partition
+        self.num_timestamp = num_timestamp
+        self.root = root
+        self.max_layer_id = max_layer_id
+        self.max_time_range_layers = max_time_range_layers
+        self.device = device
+    
+    def predict(self, total_vertex_indices, t_start, t_end):
+        # 使用 self 中的属性作为参数调用原始函数
+        return model_out_put_for_any_range_vertex_set(
+            total_vertex_indices,
+            t_start,
+            t_end,
+            max_layer_id=self.max_layer_id,
+            max_time_range_layers=self.max_time_range_layers,
+            device=self.device,
+            sequence_features1_matrix=self.sequence_features1_matrix.clone(),
+            partition=self.partition,
+            num_timestamp=self.num_timestamp,
+            root=self.root
+        )
 
 def tree_query(time_start, time_end, num_timestamp, root, max_layer_id):
     if time_start < 0 or time_end >= num_timestamp or time_start > time_end:
@@ -138,8 +162,8 @@ def model_out_put_for_any_range_vertex_set(vertex_set, time_start, time_end, max
         single_value = single_value.to(device)
         with torch.no_grad():
             output = model(sequence_features, single_value)
-
-        return output
+            output_dict = {vertex_set[i]: output[i].item() for i in range(len(vertex_set))}
+        return output_dict
     else:
         # 直接截取特征
         # 先处理feature2
@@ -153,7 +177,7 @@ def model_out_put_for_any_range_vertex_set(vertex_set, time_start, time_end, max
         for idx, v in enumerate(vertex_set):
             for idx2, temp_node in enumerate(covered_nodes):
                 core_number = temp_node.vertex_core_number.get(v, 0)
-                num_neighbor = temp_node.vertex_degree.get(v, 0)
+                num_neighbor = temp_node.vertex_degree[v]
                 sequence_features2[idx, idx2, 0] = core_number
                 sequence_features2[idx, idx2, 1] = num_neighbor
 
@@ -269,4 +293,6 @@ def model_out_put_for_any_range_vertex_set(vertex_set, time_start, time_end, max
         single_value = single_value.to(device)
         with torch.no_grad():
             output = model(sequence_features1, sequence_features2, single_value)
-        return output
+            output_dict = {vertex_set[i]: output[i].item() for i in range(len(vertex_set))}
+
+        return output_dict
